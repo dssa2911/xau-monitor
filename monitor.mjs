@@ -7,6 +7,7 @@
 //     (all M5 candles closed since the previous run are checked);
 //   - send a BUY/SELL retest signal when a closed H1 candle reaches the zone of the NEAREST support/resistance
 //     and closes back on the holding side of it (support -> BUY, resistance -> SELL).
+// Task 3, any time: BUY/SELL when an M5 candle closes with a body of 60+ pips that is at least 80% of the candle.
 // State (what was already reported) lives in state.json, kept between runs by actions/cache.
 //
 // Env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.   Local test: node monitor.mjs --dry
@@ -28,6 +29,8 @@ const PIVOT = 3;        // swing high/low = highest/lowest of 3 candles on each 
 const MERGE_ATR = 0.3;  // levels closer than 0.3 ATR(H1) are merged into one
 const MAX_LEVELS = 3;   // levels listed per side
 const ZONE_ATR = 0.2;   // retest zone = level +/- 0.2 ATR(H1)
+const BIG_BODY = 6.0;   // big M5 candle: body >= 60 pips (1 pip = 0.10)
+const BIG_RATIO = 0.8;  // ... and body >= 80% of high-low
 const hhmm = (t) => new Date(t * 1000 + 8 * 3600e3).toISOString().slice(11, 16);
 const ddhh = (t) => { const s = new Date(t * 1000 + 8 * 3600e3).toISOString(); return `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}`; };
 const stamp = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 16).replace('T', ' ') + ' (UTC+8)';
@@ -36,7 +39,8 @@ const fmt = (p) => p.toFixed(2);
 const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
 state.done ??= [];     // level ids already signalled as broken
 state.retests ??= [];  // "level id@H1 time" already signalled as retest
-const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300) }));
+state.bigs ??= [];     // M5 candle times already signalled as big candles
+const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), bigs: state.bigs.slice(-300) }));
 
 async function send(text) {
   if (DRY) { console.log('[DRY]\n' + text + '\n'); return true; }
@@ -179,6 +183,23 @@ if (lastH1.time !== state.lastH1 && h1.length > 1) {
     if (sent) state.retests.push(id);
     ok = sent && ok;
   }
+}
+
+// ---- Task 3: big M5 candle, any time of day ----
+// Body (|close - open|) of at least 60 pips ($6.00) and at least 80% of the candle's high-low range.
+// Bullish candle -> BUY, bearish candle -> SELL, entry at its close.
+for (const b of newM5) {
+  const body = Math.abs(b.close - b.open), range = b.high - b.low;
+  if (body < BIG_BODY || body < BIG_RATIO * range || state.bigs.includes(b.time)) continue;
+  const buy = b.close > b.open;
+  const sent = await send(`${buy ? '🚀 CANDLE BESAR BULLISH' : '💥 CANDLE BESAR BEARISH'} M5 ${hhmm(b.time)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
+    `Body ${(body * 10).toFixed(0)} pips (${(100 * body / range).toFixed(0)}% dari candle ${(range * 10).toFixed(0)} pips)\n` +
+    `Open ${fmt(b.open)} · High ${fmt(b.high)} · Low ${fmt(b.low)} · Close ${fmt(b.close)}` +
+    `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(b.close)} (close M5 ${hhmm(b.time)})\n` +
+    `Tren MA20: ${trendNote(buy)}\n` +
+    `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
+  if (sent) state.bigs.push(b.time);
+  ok = sent && ok;
 }
 
 // ---- Task 1: M15 / H1 / H4 vs MA 20 ----
