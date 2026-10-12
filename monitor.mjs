@@ -3,7 +3,9 @@
 // Task 2, H1 support/resistance:
 //   - after every H1 close, rebuild S/R from H1 swing highs/lows and send the list when it changed;
 //   - send a BUY/SELL breakout signal only when an M5 candle CLOSES beyond an H1 resistance/support
-//     (all M5 candles closed since the previous run are checked).
+//     (all M5 candles closed since the previous run are checked);
+//   - send a BUY/SELL retest signal when a closed H1 candle reaches the zone of the NEAREST support/resistance
+//     and closes back on the holding side of it (support -> BUY, resistance -> SELL).
 // State (what was already reported) lives in state.json, kept between runs by actions/cache.
 //
 // Env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.   Local test: node monitor.mjs --dry
@@ -24,14 +26,16 @@ const SYMBOL = 'XAU/USD', LABEL = 'XAUUSD', STRATEGY = 'DSSA', MA_LEN = 20, STAT
 const PIVOT = 3;        // swing high/low = highest/lowest of 3 candles on each side
 const MERGE_ATR = 0.3;  // levels closer than 0.3 ATR(H1) are merged into one
 const MAX_LEVELS = 3;   // levels listed per side
+const ZONE_ATR = 0.2;   // retest zone = level +/- 0.2 ATR(H1)
 const hhmm = (t) => new Date(t * 1000 + 8 * 3600e3).toISOString().slice(11, 16);
 const ddhh = (t) => { const s = new Date(t * 1000 + 8 * 3600e3).toISOString(); return `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}`; };
 const stamp = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 16).replace('T', ' ') + ' (UTC+8)';
 const fmt = (p) => p.toFixed(2);
 
 const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
-state.done ??= [];   // level ids already signalled as broken
-const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300) }));
+state.done ??= [];     // level ids already signalled as broken
+state.retests ??= [];  // "level id@H1 time" already signalled as retest
+const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300) }));
 
 async function send(text) {
   if (DRY) { console.log('[DRY]\n' + text + '\n'); return true; }
@@ -146,6 +150,34 @@ for (const side of ['resistance', 'support']) {
   ok = sent && ok;
 }
 
+// ---- Task 2c: retest of the nearest H1 support/resistance by the last closed H1 candle ----
+// Support retest: low reaches support + zone and the close stays above support -> BUY.
+// Resistance retest: high reaches resistance - zone and the close stays below resistance -> SELL.
+// The previous H1 candle must still be outside the zone, so a candle sitting on the level doesn't repeat it.
+if (lastH1.time !== state.lastH1 && h1.length > 1) {
+  const atr = atrSeries(h1), zone = ZONE_ATR * atr[atr.length - 1], prev = h1[h1.length - 2];
+  const checks = [
+    { l: lv.support[0], buy: true, hit: (l) => lastH1.low <= l.price + zone && lastH1.close > l.price && prev.low > l.price + zone },
+    { l: lv.resistance[0], buy: false, hit: (l) => lastH1.high >= l.price - zone && lastH1.close < l.price && prev.high < l.price - zone },
+  ];
+  for (const { l, buy, hit } of checks) {
+    if (!l || !hit(l)) continue;
+    const id = `${levelId(l)}@${lastH1.time}`;
+    if (state.retests.includes(id)) continue;
+    const withTrend = buy ? s1.above && s4.above : !s1.above && !s4.above;
+    const against = buy ? !s1.above && !s4.above : s1.above && s4.above;
+    const sent = await send(`${buy ? '🟢 RETEST SUPPORT' : '🔴 RETEST RESISTANCE'} H1 ${fmt(l.price)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
+      `✅ Candle H1 ${hhmm(lastH1.time)} masuk zona ${fmt(l.price - zone)}–${fmt(l.price + zone)} ` +
+      `(${buy ? `low ${fmt(lastH1.low)}` : `high ${fmt(lastH1.high)}`}) lalu close ${fmt(lastH1.close)} ` +
+      `${buy ? 'di atas support' : 'di bawah resistance'} (swing ${ddhh(l.time)}).` +
+      `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(lastH1.close)} (close H1 ${hhmm(lastH1.time)})\n` +
+      `Tren MA20: ${withTrend ? '✅ searah H1 & H4' : against ? '⚠️ melawan H1 & H4' : '⚖️ H1/H4 campuran'}\n` +
+      `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
+    if (sent) state.retests.push(id);
+    ok = sent && ok;
+  }
+}
+
 // ---- Task 1: H1 / H4 vs MA 20 ----
 const h4Bar = h4[h4.length - 1];
 const both = s1.above === s4.above ? `✅ H1 & H4 searah: ${s1.above ? 'DI ATAS MA 20 (bullish)' : 'DI BAWAH MA 20 (bearish)'}` : '⚖️ H1 & H4 tidak searah';
@@ -162,7 +194,7 @@ if (lastH1.time !== state.lastH1 && key !== state.levelsKey) {
   const list = (arr) => arr.length ? arr.map(l => `${fmt(l.price)} (swing ${ddhh(l.time)})`).join('\n') : '- belum ada';
   ok = await send(`📐 Support/Resistance H1 · update candle ${hhmm(lastH1.time)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
     `🔴 Resistance:\n${list([...res].reverse())}\n💰 Harga: ${fmt(lastM5.close)}\n🟢 Support:\n${list(sup)}\n\n` +
-    `Sinyal dikirim hanya jika candle M5 close menembus level di atas.`) && ok;
+    `Sinyal breakout: candle M5 close menembus level. Sinyal retest: candle H1 masuk zona S/R terdekat lalu close bertahan.`) && ok;
   if (ok) state.levelsKey = key;
 }
 
