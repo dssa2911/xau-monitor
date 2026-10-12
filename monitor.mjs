@@ -1,14 +1,14 @@
 // XAU/USD monitor for GitHub Actions (runs every 30 minutes, no laptop needed). Data: setra.id candles.
-// Each run sends:
-//   - H1 and H4 candle vs MA 20, H1 supply/demand zones and H1 order blocks;
-//   - every H1 order block an H1 candle closed through since the last run, with its M5 confirmation;
-//   - for every M5 candle closed since the last run: confirmed breakout when it closed beyond an intact
-//     H1 order block, warning when it only wicked through.
+// Task 1, every run while the market is open: are the H1 and H4 candles above or below MA 20 (SMA of close)?
+// Task 2, H1 support/resistance:
+//   - after every H1 close, rebuild S/R from H1 swing highs/lows and send the list when it changed;
+//   - send a BUY/SELL breakout signal only when an M5 candle CLOSES beyond an H1 resistance/support
+//     (all M5 candles closed since the previous run are checked).
 // State (what was already reported) lives in state.json, kept between runs by actions/cache.
 //
 // Env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.   Local test: node monitor.mjs --dry
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { atrSeries, detectZones, detectOrderBlocks, nearest } from './sd_zones.mjs';
+import { atrSeries } from './sd_zones.mjs';
 
 const DRY = process.argv.includes('--dry');
 // Tolerate common copy-paste mistakes in the secrets: surrounding quotes/spaces and a leading "bot".
@@ -20,16 +20,18 @@ if (!DRY && (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID)) {
   process.exit(1);
 }
 
-const SYMBOL = 'XAU/USD', LABEL = 'XAUUSD', MA_LEN = 20, MAX_LIST = 3, STATE = 'state.json';
+const SYMBOL = 'XAU/USD', LABEL = 'XAUUSD', MA_LEN = 20, STATE = 'state.json';
+const PIVOT = 3;        // swing high/low = highest/lowest of 3 candles on each side
+const MERGE_ATR = 0.3;  // levels closer than 0.3 ATR(H1) are merged into one
+const MAX_LEVELS = 3;   // levels listed per side
 const hhmm = (t) => new Date(t * 1000 + 8 * 3600e3).toISOString().slice(11, 16);
+const ddhh = (t) => { const s = new Date(t * 1000 + 8 * 3600e3).toISOString(); return `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}`; };
 const stamp = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 16).replace('T', ' ') + ' (UTC+8)';
 const fmt = (p) => p.toFixed(2);
-const range = (z) => `${fmt(z.bottom)} – ${fmt(z.top)}`;
 
 const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
-state.done ??= [];   // order block ids already confirmed or closed through
-state.warned ??= []; // order block ids already warned about a wick-only break
-const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-200), warned: state.warned.slice(-200) }));
+state.done ??= [];   // level ids already signalled as broken
+const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300) }));
 
 async function send(text) {
   if (DRY) { console.log('[DRY]\n' + text + '\n'); return true; }
@@ -77,103 +79,93 @@ function maStatus(bars, i) {
   return { above, text: `${above ? '🟢 DI ATAS' : '🔴 DI BAWAH'} MA 20 (${pos})\nClose ${fmt(b.close)} · MA20 ${fmt(ma)} · selisih ${b.close - ma >= 0 ? '+' : ''}${fmt(b.close - ma)}${cross}` };
 }
 
-const obName = (ob) => ob.type === 'demand' ? 'Bullish OB' : 'Bearish OB';
-const obId = (ob) => `${ob.type}:${ob.time}`;
-const beyond = (ob, c) => ob.type === 'demand' ? c < ob.bottom : c > ob.top;
-const pierced = (ob, b) => ob.type === 'demand' ? b.low < ob.bottom : b.high > ob.top;
-const breakDir = (ob) => ob.type === 'demand' ? '🔻 BREAKOUT KE BAWAH' : '🔺 BREAKOUT KE ATAS';
-const edge = (ob) => ob.type === 'demand' ? `di bawah ${fmt(ob.bottom)}` : `di atas ${fmt(ob.top)}`;
-const mark = (list, id) => { if (!list.includes(id)) list.push(id); };
+// H1 support/resistance from confirmed swing highs/lows that no H1 candle has closed through since.
+// Resistance = swing high above the last close, support = swing low below it. Near levels are merged.
+function levels(bars) {
+  const atr = atrSeries(bars), a = atr[atr.length - 1], last = bars[bars.length - 1].close;
+  const found = [];
+  for (let i = PIVOT; i < bars.length - PIVOT; i++) {
+    const win = bars.slice(i - PIVOT, i + PIVOT + 1);
+    const after = bars.slice(i + 1);
+    if (bars[i].high === Math.max(...win.map(b => b.high)) && bars[i].high > last && !after.some(b => b.close > bars[i].high))
+      found.push({ type: 'resistance', price: bars[i].high, time: bars[i].time });
+    if (bars[i].low === Math.min(...win.map(b => b.low)) && bars[i].low < last && !after.some(b => b.close < bars[i].low))
+      found.push({ type: 'support', price: bars[i].low, time: bars[i].time });
+  }
+  const pick = (type, dir) => {
+    const out = [];
+    for (const l of found.filter(l => l.type === type).sort((x, y) => dir * (x.price - y.price))) {
+      if (out.some(o => Math.abs(o.price - l.price) < MERGE_ATR * a)) continue;
+      out.push(l);
+      if (out.length === MAX_LEVELS) break;
+    }
+    return out;
+  };
+  return { resistance: pick('resistance', 1), support: pick('support', -1) };   // nearest first
+}
+const levelId = (l) => `${l.type}:${l.time}`;
 
+// ---- data ----
 const h1All = await series('1h', 3600, false);
 const h1 = h1All.filter(b => b.time + 3600 <= Date.now() / 1000);
 const h4 = toH4(h1All);   // keeps the forming H4 candle
-const m5All = await series('5m', 300);
-const lastH1 = h1[h1.length - 1], lastM5 = m5All[m5All.length - 1];
+const m5 = await series('5m', 300);
+const lastH1 = h1[h1.length - 1], lastM5 = m5[m5.length - 1];
 
-// Market closed (weekend / daily break): nothing new since the last run.
+// Market closed (weekend / daily break): nothing new since the last run, send nothing.
 if (state.lastM5 && lastM5.time <= state.lastM5) { console.log('no new candle, skip'); save(); process.exit(0); }
 
-const atr = atrSeries(h1);
-const obs = detectOrderBlocks(h1, atr);
-const zonesAll = detectZones(h1, atr);
 const s1 = maStatus(h1, h1.length - 1);
 const s4 = maStatus(h4, h4.length - 1);
+const lv = levels(h1);
+let ok = true;
 
-// Entry after an M5-confirmed breakout: BUY when a bearish OB is broken upward, SELL when a bullish OB is broken
-// downward. Entry = close of the M5 confirmation candle. No SL/TP (user's choice).
-function entrySignal(ob, conf) {
-  const buy = ob.type === 'supply';
+// ---- Task 2b: breakout signals, only on an M5 close beyond the level ----
+const newM5 = state.lastM5 ? m5.filter(b => b.time > state.lastM5) : m5.slice(-6);
+for (const side of ['resistance', 'support']) {
+  // nearest level first, so one candle breaking several levels gives one signal for the furthest level broken
+  const broken = [];
+  for (const l of lv[side]) {
+    if (state.done.includes(levelId(l))) continue;
+    const conf = newM5.find(b => side === 'resistance' ? b.close > l.price : b.close < l.price);
+    if (conf) broken.push({ l, conf });
+  }
+  if (!broken.length) continue;
+  const { l, conf } = broken[broken.length - 1];
+  const buy = side === 'resistance';
   const withTrend = buy ? s1.above && s4.above : !s1.above && !s4.above;
   const against = buy ? !s1.above && !s4.above : s1.above && s4.above;
-  return `\n\n🎯 SINYAL ${buy ? 'BUY 🟢' : 'SELL 🔴'}\n` +
-    `Entry: ${fmt(conf.close)} (close M5 ${hhmm(conf.time)})\n` +
-    `Tren MA20: ${withTrend ? '✅ searah H1 & H4' : against ? '⚠️ melawan H1 & H4' : '⚖️ H1/H4 campuran'}\n` +
-    `Harga sekarang: ${fmt(lastM5.close)}`;
-}
-
-// 1. H1 candles closed since the last run that went through an H1 order block, with M5 confirmation.
-const newH1 = state.lastH1 ? h1.filter(b => b.time > state.lastH1) : [lastH1];
-const broke = [];
-for (const bar of newH1) {
-  const idx = h1.indexOf(bar), before = h1.slice(0, idx);
-  for (const ob of detectOrderBlocks(before, atrSeries(before))) {
-    if (!beyond(ob, bar.close)) continue;   // each H1 candle is checked once (state.lastH1)
-    const conf = m5All.find(b => b.time >= bar.time && b.time < bar.time + 3600 && beyond(ob, b.close));
-    const signalled = state.done.includes(obId(ob));   // entry already sent by an earlier M5 alert
-    mark(state.done, obId(ob)); mark(state.warned, obId(ob));
-    broke.push(`${breakDir(ob)} · ${obName(ob)} ${range(ob)}\nCandle H1 ${hhmm(bar.time)} close ${fmt(bar.close)} ${edge(ob)}.\n` +
-      (conf ? `✅ M5 konfirmasi: candle M5 ${hhmm(conf.time)} close ${fmt(conf.close)} ${edge(ob)}.` + (signalled ? '' : entrySignal(ob, conf))
-            : '❌ Tidak ada candle M5 yang close di luar OB.'));
-  }
-}
-
-// 2. M5 candles closed since the last run against the H1 order blocks that are still intact.
-const newM5 = state.lastM5 ? m5All.filter(b => b.time > state.lastM5) : m5All.slice(-6);
-const alerts = [];
-const confirmed = { supply: [], demand: [] };   // broken OBs per side, each with its first confirming M5 candle
-for (const ob of obs) {
-  const id = obId(ob);
-  if (state.done.includes(id)) continue;
-  const conf = newM5.find(b => beyond(ob, b.close));
-  if (conf) {
-    mark(state.done, id);
-    confirmed[ob.type].push({ ob, conf });
-    continue;
-  }
-  const wick = newM5.find(b => pierced(ob, b));
-  if (wick && !state.warned.includes(id)) {
-    mark(state.warned, id);
-    alerts.push(`⚠️ Harga menembus ${obName(ob)} H1 ${range(ob)}\n❌ BELUM TERKONFIRMASI M5: candle M5 ${hhmm(wick.time)} sempat ${ob.type === 'demand' ? `turun ke ${fmt(wick.low)}` : `naik ke ${fmt(wick.high)}`}, tapi close ${fmt(wick.close)} kembali di dalam/sisi OB. Waspada false breakout.`);
-  }
-}
-// One message and one entry per direction; the entry uses the broken OB closest to price (last level broken).
-for (const side of ['supply', 'demand']) {
-  const list = confirmed[side];
-  if (!list.length) continue;
-  list.sort((a, b) => side === 'supply' ? b.ob.top - a.ob.top : a.ob.bottom - b.ob.bottom);
-  const { ob, conf } = list[0];
-  const others = list.slice(1).map(x => `${obName(x.ob)} ${range(x.ob)}`).join(', ');
-  alerts.push(`${breakDir(ob)} · ${obName(ob)} H1 ${range(ob)}\n✅ TERKONFIRMASI M5: candle M5 ${hhmm(conf.time)} close ${fmt(conf.close)} ${edge(ob)}.` +
+  const others = broken.slice(0, -1).map(x => fmt(x.l.price)).join(', ');
+  const sent = await send(`${buy ? '🔺 BREAKOUT RESISTANCE' : '🔻 BREAKOUT SUPPORT'} H1 ${fmt(l.price)}\n${LABEL} · ${stamp()}\n\n` +
+    `✅ Konfirmasi M5: candle M5 ${hhmm(conf.time)} close ${fmt(conf.close)} ${buy ? 'di atas' : 'di bawah'} ${fmt(l.price)}.` +
     (others ? `\nIkut tertembus: ${others}.` : '') +
-    entrySignal(ob, conf) + `\n\n⏳ Konfirmasi H1 menyusul setelah candle H1 ${hhmm(lastH1.time + 3600)} close.`);
+    `\n\n🎯 SINYAL ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(conf.close)} (close M5 ${hhmm(conf.time)})\n` +
+    `Tren MA20: ${withTrend ? '✅ searah H1 & H4' : against ? '⚠️ melawan H1 & H4' : '⚖️ H1/H4 campuran'}\n` +
+    `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
+  if (sent) broken.forEach(x => state.done.push(levelId(x.l)));
+  ok = sent && ok;
 }
-for (const a of alerts) await send(`${a}\n${LABEL} · ${stamp()}\nBukan saran investasi.`);
 
-// 3. Report.
+// ---- Task 1: H1 / H4 vs MA 20 ----
 const h4Bar = h4[h4.length - 1];
 const both = s1.above === s4.above ? `✅ H1 & H4 searah: ${s1.above ? 'DI ATAS MA 20 (bullish)' : 'DI BAWAH MA 20 (bearish)'}` : '⚖️ H1 & H4 tidak searah';
-const price = lastM5.close;
-const zones = nearest(zonesAll, price, MAX_LIST);
-const near = nearest(obs, price, MAX_LIST);
-const list = (arr, fresh) => arr.length ? arr.map(z => range(z) + (fresh && z.fresh ? ' (fresh)' : '')).join('\n') : '-';
+ok = await send(`📊 ${LABEL} · MA 20 · ${stamp()}\n\n` +
+  `H1 (candle ${hhmm(lastH1.time)} close):\n${s1.text}\n\n` +
+  `H4 (candle ${hhmm(h4Bar.time)} berjalan, close ${hhmm(h4Bar.time + 4 * 3600)}):\n${s4.text}\n\n${both}`) && ok;
 
-const sent = await send(`📈 ${LABEL} · ${stamp()}\n\n` +
-  `H1 (candle ${hhmm(lastH1.time)} close):\n${s1.text}\n\nH4 (candle ${hhmm(h4Bar.time)} berjalan, close ${hhmm(h4Bar.time + 4 * 3600)}):\n${s4.text}\n\n${both}\n\n` +
-  `━━ Zona H1 ━━\n🔴 Supply:\n${list([...zones.supply].reverse(), true)}\n🟢 Demand:\n${list(zones.demand, true)}\n\n` +
-  `━━ Order Block H1 ━━\n🔴 Bearish OB:\n${list([...near.supply].reverse())}\n💰 Harga: ${fmt(price)}\n🟢 Bullish OB:\n${list(near.demand)}` +
-  (broke.length ? `\n\n━━ Breakout OB H1 ━━\n${broke.join('\n\n')}` : ''));
+// ---- Task 2a: S/R list after a new H1 close, only when it changed ----
+// Levels already broken on M5 are left out until the H1 close drops them for good.
+const res = lv.resistance.filter(l => !state.done.includes(levelId(l)));
+const sup = lv.support.filter(l => !state.done.includes(levelId(l)));
+const key = JSON.stringify([res.map(levelId), sup.map(levelId)]);
+if (lastH1.time !== state.lastH1 && key !== state.levelsKey) {
+  const list = (arr) => arr.length ? arr.map(l => `${fmt(l.price)} (swing ${ddhh(l.time)})`).join('\n') : '- belum ada';
+  ok = await send(`📐 Support/Resistance H1 · update candle ${hhmm(lastH1.time)}\n${LABEL} · ${stamp()}\n\n` +
+    `🔴 Resistance:\n${list([...res].reverse())}\n💰 Harga: ${fmt(lastM5.close)}\n🟢 Support:\n${list(sup)}\n\n` +
+    `Sinyal dikirim hanya jika candle M5 close menembus level di atas.`) && ok;
+  if (ok) state.levelsKey = key;
+}
 
-// Only advance when the report went out, so a failed send is retried on the next run.
-if (sent) { state.lastH1 = lastH1.time; state.lastM5 = lastM5.time; }
+// Only advance when everything went out, so a failed send is retried on the next run.
+if (ok) { state.lastH1 = lastH1.time; state.lastM5 = lastM5.time; }
 save();
