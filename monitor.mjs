@@ -32,7 +32,7 @@ state.warned ??= []; // order block ids already warned about a wick-only break
 const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-200), warned: state.warned.slice(-200) }));
 
 async function send(text) {
-  if (DRY) { console.log('[DRY]\n' + text + '\n'); return; }
+  if (DRY) { console.log('[DRY]\n' + text + '\n'); return true; }
   const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, disable_web_page_preview: true }),
@@ -41,8 +41,9 @@ async function send(text) {
   console.log(`telegram ${j.ok ? 'sent' : 'FAILED ' + JSON.stringify(j).slice(0, 200)}`);
   if (!j.ok) {
     process.exitCode = 1;   // mark the GitHub run red
-    if (j.error_code === 404 || j.error_code === 401) console.log(`Token ditolak Telegram. Panjang token ${TELEGRAM_BOT_TOKEN.length} karakter, format ${/^d+:[w-]{30,}$/.test(TELEGRAM_BOT_TOKEN) ? 'benar' : 'SALAH (harus angka:huruf, mis. 123456:ABC...)'}.`);
+    if (j.error_code === 404 || j.error_code === 401) console.log(`Token ditolak Telegram. Panjang token ${TELEGRAM_BOT_TOKEN.length} karakter, format ${/^\d+:[\w-]{30,}$/.test(TELEGRAM_BOT_TOKEN) ? 'benar' : 'SALAH (harus angka:huruf, mis. 123456:ABC...)'}.`);
   }
+  return j.ok;
 }
 
 // Oldest first, times in unix seconds (UTC). `closed` drops the candle that is still forming.
@@ -139,12 +140,12 @@ const zones = nearest(detectZones(h1, atr), price, MAX_LIST);
 const near = nearest(obs, price, MAX_LIST);
 const list = (arr, fresh) => arr.length ? arr.map(z => range(z) + (fresh && z.fresh ? ' (fresh)' : '')).join('\n') : '-';
 
-await send(`📈 ${LABEL} · ${stamp()}\n\n` +
+const sent = await send(`📈 ${LABEL} · ${stamp()}\n\n` +
   `H1 (candle ${hhmm(lastH1.time)} close):\n${s1.text}\n\nH4 (candle ${hhmm(h4Bar.time)} berjalan, close ${hhmm(h4Bar.time + 4 * 3600)}):\n${s4.text}\n\n${both}\n\n` +
   `━━ Zona H1 ━━\n🔴 Supply:\n${list([...zones.supply].reverse(), true)}\n🟢 Demand:\n${list(zones.demand, true)}\n\n` +
   `━━ Order Block H1 ━━\n🔴 Bearish OB:\n${list([...near.supply].reverse())}\n💰 Harga: ${fmt(price)}\n🟢 Bullish OB:\n${list(near.demand)}` +
   (broke.length ? `\n\n━━ Breakout OB H1 ━━\n${broke.join('\n\n')}` : ''));
 
-state.lastH1 = lastH1.time;
-state.lastM5 = lastM5.time;
+// Only advance when the report went out, so a failed send is retried on the next run.
+if (sent) { state.lastH1 = lastH1.time; state.lastM5 = lastM5.time; }
 save();
