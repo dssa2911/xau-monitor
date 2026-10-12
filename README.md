@@ -7,6 +7,7 @@ Setiap 30 menit:
 - Candle H1 dan H4 terhadap MA 20
 - Zona supply/demand H1 dan order block H1
 - Breakout order block H1 + konfirmasi candle M5 (dicek untuk semua candle M5 sejak run sebelumnya)
+- Sinyal entry BUY/SELL setelah breakout terkonfirmasi M5: entry di close candle M5, SL di balik level OB yang ditembus, TP1 1:1, TP2 zona/OB lawan (min 1:1.5) atau 1:2
 
 ## Setup (sekali saja)
 
