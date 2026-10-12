@@ -4,7 +4,9 @@ Bot XAU/USD yang berjalan di server GitHub setiap 15 menit selama market buka, g
 Data harga dari setra.id (XAU/USD), tanpa API key. Pesan dikirim ke Telegram.
 
 Tugas:
-1. **Setiap 15 menit selama market buka** — candle H1 dan H4 berada di atas atau di bawah MA 20.
+1. **Setiap 15 menit selama market buka** — candle M15, H1 dan H4 berada di atas atau di bawah MA 20.
+   Tren **terkonfirmasi** hanya jika ketiganya searah (semua di atas = bullish, semua di bawah = bearish);
+   setiap sinyal BUY/SELL mencantumkan apakah trennya terkonfirmasi.
 2. **Support/resistance H1** — setiap candle H1 close, S/R dihitung ulang dari swing high/low H1 (dikirim
    kalau berubah). Sinyal **BUY** saat resistance H1 ditembus, **SELL** saat support H1 ditembus —
    hanya jika ada candle M5 yang **close** menembus level tersebut. Entry = close candle M5 itu.

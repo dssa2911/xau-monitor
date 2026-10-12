@@ -1,5 +1,6 @@
 // DSSA strategy: XAU/USD monitor for GitHub Actions (runs every 15 minutes in market hours, no laptop needed). Data: setra.id.
-// Task 1, every run while the market is open: are the H1 and H4 candles above or below MA 20 (SMA of close)?
+// Task 1, every run while the market is open: are the M15, H1 and H4 candles above or below MA 20 (SMA of close)?
+//   The trend is confirmed only when all three agree; every signal says whether it is.
 // Task 2, H1 support/resistance:
 //   - after every H1 close, rebuild S/R from H1 swing highs/lows and send the list when it changed;
 //   - send a BUY/SELL breakout signal only when an M5 candle CLOSES beyond an H1 resistance/support
@@ -114,6 +115,7 @@ const h1All = await series('1h', 3600, false);
 const h1 = h1All.filter(b => b.time + 3600 <= Date.now() / 1000);
 const h4 = toH4(h1All);   // keeps the forming H4 candle
 const m5 = await series('5m', 300);
+const m15 = await series('15m', 900);
 const lastH1 = h1[h1.length - 1], lastM5 = m5[m5.length - 1];
 
 // Market closed (weekend / daily break): nothing new since the last run, send nothing.
@@ -121,6 +123,11 @@ if (state.lastM5 && lastM5.time <= state.lastM5) { console.log('no new candle, s
 
 const s1 = maStatus(h1, h1.length - 1);
 const s4 = maStatus(h4, h4.length - 1);
+const s15 = maStatus(m15, m15.length - 1);
+// Trend is confirmed only when M15, H1 and H4 are all on the same side of MA 20.
+const ups = [s15, s1, s4].filter(s => s.above).length;
+const trendNote = (buy) => (buy ? ups === 3 : ups === 0) ? '✅ terkonfirmasi (M15, H1 & H4 searah)'
+  : (buy ? ups === 0 : ups === 3) ? '⚠️ melawan tren M15, H1 & H4' : '⚖️ belum terkonfirmasi (M15/H1/H4 campuran)';
 const lv = levels(h1);
 let ok = true;
 
@@ -137,14 +144,12 @@ for (const side of ['resistance', 'support']) {
   if (!broken.length) continue;
   const { l, conf } = broken[broken.length - 1];
   const buy = side === 'resistance';
-  const withTrend = buy ? s1.above && s4.above : !s1.above && !s4.above;
-  const against = buy ? !s1.above && !s4.above : s1.above && s4.above;
   const others = broken.slice(0, -1).map(x => fmt(x.l.price)).join(', ');
   const sent = await send(`${buy ? '🔺 BREAKOUT RESISTANCE' : '🔻 BREAKOUT SUPPORT'} H1 ${fmt(l.price)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
     `✅ Konfirmasi M5: candle M5 ${hhmm(conf.time)} close ${fmt(conf.close)} ${buy ? 'di atas' : 'di bawah'} ${fmt(l.price)}.` +
     (others ? `\nIkut tertembus: ${others}.` : '') +
     `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(conf.close)} (close M5 ${hhmm(conf.time)})\n` +
-    `Tren MA20: ${withTrend ? '✅ searah H1 & H4' : against ? '⚠️ melawan H1 & H4' : '⚖️ H1/H4 campuran'}\n` +
+    `Tren MA20: ${trendNote(buy)}\n` +
     `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
   if (sent) broken.forEach(x => state.done.push(levelId(x.l)));
   ok = sent && ok;
@@ -164,24 +169,23 @@ if (lastH1.time !== state.lastH1 && h1.length > 1) {
     if (!l || !hit(l)) continue;
     const id = `${levelId(l)}@${lastH1.time}`;
     if (state.retests.includes(id)) continue;
-    const withTrend = buy ? s1.above && s4.above : !s1.above && !s4.above;
-    const against = buy ? !s1.above && !s4.above : s1.above && s4.above;
     const sent = await send(`${buy ? '🟢 RETEST SUPPORT' : '🔴 RETEST RESISTANCE'} H1 ${fmt(l.price)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
       `✅ Candle H1 ${hhmm(lastH1.time)} masuk zona ${fmt(l.price - zone)}–${fmt(l.price + zone)} ` +
       `(${buy ? `low ${fmt(lastH1.low)}` : `high ${fmt(lastH1.high)}`}) lalu close ${fmt(lastH1.close)} ` +
       `${buy ? 'di atas support' : 'di bawah resistance'} (swing ${ddhh(l.time)}).` +
       `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(lastH1.close)} (close H1 ${hhmm(lastH1.time)})\n` +
-      `Tren MA20: ${withTrend ? '✅ searah H1 & H4' : against ? '⚠️ melawan H1 & H4' : '⚖️ H1/H4 campuran'}\n` +
+      `Tren MA20: ${trendNote(buy)}\n` +
       `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
     if (sent) state.retests.push(id);
     ok = sent && ok;
   }
 }
 
-// ---- Task 1: H1 / H4 vs MA 20 ----
-const h4Bar = h4[h4.length - 1];
-const both = s1.above === s4.above ? `✅ H1 & H4 searah: ${s1.above ? 'DI ATAS MA 20 (bullish)' : 'DI BAWAH MA 20 (bearish)'}` : '⚖️ H1 & H4 tidak searah';
+// ---- Task 1: M15 / H1 / H4 vs MA 20 ----
+const h4Bar = h4[h4.length - 1], lastM15 = m15[m15.length - 1];
+const both = ups === 3 || ups === 0 ? `✅ Tren terkonfirmasi: M15, H1 & H4 ${ups ? 'DI ATAS MA 20 (bullish)' : 'DI BAWAH MA 20 (bearish)'}` : '⚖️ Tren belum terkonfirmasi: M15, H1 & H4 tidak searah';
 ok = await send(`📊 ${STRATEGY} · ${LABEL} · MA 20 · ${stamp()}\n\n` +
+  `M15 (candle ${hhmm(lastM15.time)} close):\n${s15.text}\n\n` +
   `H1 (candle ${hhmm(lastH1.time)} close):\n${s1.text}\n\n` +
   `H4 (candle ${hhmm(h4Bar.time)} berjalan, close ${hhmm(h4Bar.time + 4 * 3600)}):\n${s4.text}\n\n${both}`) && ok;
 
