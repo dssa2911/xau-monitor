@@ -8,7 +8,7 @@
 //   - send a BUY/SELL retest signal when a closed H1 candle reaches the zone of the NEAREST support/resistance
 //     and closes back on the holding side of it (support -> BUY, resistance -> SELL).
 // Task 3, any time: BUY/SELL when an M5 candle closes with a body of 60+ pips that is at least 80% of the candle.
-// Task 4, DSSA London: EMA 20 crossing EMA 50 on a closed H1 or H4 candle -> cross up (bullish) / cross down (bearish),
+// Task 4, DSSA London: EMA 20 crossing EMA 50 on a closed M15 candle -> cross up (bullish) / cross down (bearish),
 //   with the resulting DSSA London bias (which direction is allowed in the London session).
 // State (what was already reported) lives in state.json, kept between runs by actions/cache.
 //
@@ -43,7 +43,7 @@ const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
 state.done ??= [];     // level ids already signalled as broken
 state.retests ??= [];  // "level id@H1 time" already signalled as retest
 state.bigs ??= [];     // M5 candle times already signalled as big candles
-state.crosses ??= [];  // "H1:time" / "H4:time" EMA crosses already signalled
+state.crosses ??= [];  // "M15:time" EMA crosses already signalled
 const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), bigs: state.bigs.slice(-300), crosses: state.crosses.slice(-300) }));
 
 async function send(text) {
@@ -212,7 +212,7 @@ for (const b of newM5) {
   ok = sent && ok;
 }
 
-// ---- Task 4: EMA 20 x EMA 50 cross on closed H1 / H4 candles (DSSA London bias) ----
+// ---- Task 4: EMA 20 x EMA 50 cross on closed M15 candles (with the DSSA London H4/H1 bias) ----
 // DSSA London bias: H4 bullish = EMA20 > EMA50 and close > EMA50; H1 bullish = EMA20 > EMA50 and close > EMA20
 // (bearish mirrored). Both agree -> only that direction in the London session, otherwise BUY & SELL.
 const h4Closed = h4.filter(b => b.time + 4 * 3600 <= Date.now() / 1000);
@@ -226,7 +226,7 @@ const b4 = biasAt(h4Closed, e4, h4Closed.length - 1, true), b1 = biasAt(h1, e1, 
 const biasName = (b) => b === 1 ? 'Bullish 🟢' : b === -1 ? 'Bearish 🔴' : 'Netral ⚪';
 const allowed = b4 === b1 && b4 !== 0 ? (b4 === 1 ? 'BUY saja' : 'SELL saja') : 'BUY & SELL';
 
-for (const tf of [{ name: 'H1', bars: h1, e: e1, sec: 3600, key: 'lastCrossH1' }, { name: 'H4', bars: h4Closed, e: e4, sec: 4 * 3600, key: 'lastCrossH4' }]) {
+for (const tf of [{ name: 'M15', bars: m15, e: emaPair(m15), key: 'lastCrossM15' }]) {
   const { bars, e } = tf;
   if (bars.length < EMA_SLOW + 2) continue;
   // candles closed since the previous run (first run: only the last one)
