@@ -11,7 +11,10 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { atrSeries, detectZones, detectOrderBlocks, nearest } from './sd_zones.mjs';
 
 const DRY = process.argv.includes('--dry');
-const { TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID } = process.env;
+// Tolerate common copy-paste mistakes in the secrets: surrounding quotes/spaces and a leading "bot".
+const clean = (v) => (v || '').trim().replace(/^["']|["']$/g, '').trim();
+const TELEGRAM_BOT_TOKEN = clean(process.env.TELEGRAM_BOT_TOKEN).replace(/^bot/i, '');
+const TELEGRAM_CHAT_ID = clean(process.env.TELEGRAM_CHAT_ID);
 if (!DRY && (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID)) {
   console.error('Set TELEGRAM_BOT_TOKEN dan TELEGRAM_CHAT_ID');
   process.exit(1);
@@ -36,6 +39,10 @@ async function send(text) {
   });
   const j = await r.json();
   console.log(`telegram ${j.ok ? 'sent' : 'FAILED ' + JSON.stringify(j).slice(0, 200)}`);
+  if (!j.ok) {
+    process.exitCode = 1;   // mark the GitHub run red
+    if (j.error_code === 404 || j.error_code === 401) console.log(`Token ditolak Telegram. Panjang token ${TELEGRAM_BOT_TOKEN.length} karakter, format ${/^d+:[w-]{30,}$/.test(TELEGRAM_BOT_TOKEN) ? 'benar' : 'SALAH (harus angka:huruf, mis. 123456:ABC...)'}.`);
+  }
 }
 
 // Oldest first, times in unix seconds (UTC). `closed` drops the candle that is still forming.
