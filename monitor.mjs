@@ -99,33 +99,17 @@ const obs = detectOrderBlocks(h1, atr);
 const zonesAll = detectZones(h1, atr);
 const s1 = maStatus(h1, h1.length - 1);
 const s4 = maStatus(h4, h4.length - 1);
-const m5Atr = atrSeries(m5All);
 
 // Entry after an M5-confirmed breakout: BUY when a bearish OB is broken upward, SELL when a bullish OB is broken
-// downward. Entry = close of the M5 confirmation candle. SL = just behind the broken OB edge - 0.3 ATR(M5)
-// (that edge should now hold as support/resistance). TP1 = 1R; TP2 = nearest opposite zone / OB edge giving
-// >= 1.5R, else 2R.
+// downward. Entry = close of the M5 confirmation candle. No SL/TP (user's choice).
 function entrySignal(ob, conf) {
   const buy = ob.type === 'supply';
-  const a = m5Atr[m5All.indexOf(conf)];
-  const e = conf.close;
-  const sl = buy ? ob.top - 0.3 * a : ob.bottom + 0.3 * a;
-  const risk = Math.abs(e - sl);
-  const tp1 = buy ? e + risk : e - risk;
-  const { supply, demand } = nearest([...zonesAll, ...obs].filter(z => obId(z) !== obId(ob)), e, 10);
-  const target = buy ? supply.find(z => z.bottom - e >= 1.5 * risk)?.bottom : demand.find(z => e - z.top >= 1.5 * risk)?.top;
-  const tp2 = target ?? (buy ? e + 2 * risk : e - 2 * risk);
   const withTrend = buy ? s1.above && s4.above : !s1.above && !s4.above;
   const against = buy ? !s1.above && !s4.above : s1.above && s4.above;
-  const p = lastM5.close;
-  const status = (buy ? p <= sl : p >= sl) ? '❌ Harga sudah menyentuh SL, sinyal batal'
-    : (buy ? p >= tp1 : p <= tp1) ? '⚠️ Harga sudah melewati TP1, jangan kejar (tunggu retest)'
-    : '🟢 Masih valid';
   return `\n\n🎯 SINYAL ${buy ? 'BUY 🟢' : 'SELL 🔴'}\n` +
-    `Entry: ${fmt(e)} (close M5 ${hhmm(conf.time)})\nStop loss: ${fmt(sl)}\n` +
-    `TP1: ${fmt(tp1)} (1:1)\nTP2: ${fmt(tp2)} (1:${(Math.abs(tp2 - e) / risk).toFixed(1)})\n` +
+    `Entry: ${fmt(conf.close)} (close M5 ${hhmm(conf.time)})\n` +
     `Tren MA20: ${withTrend ? '✅ searah H1 & H4' : against ? '⚠️ melawan H1 & H4' : '⚖️ H1/H4 campuran'}\n` +
-    `Harga sekarang ${fmt(p)} · ${status}`;
+    `Harga sekarang: ${fmt(lastM5.close)}`;
 }
 
 // 1. H1 candles closed since the last run that went through an H1 order block, with M5 confirmation.
