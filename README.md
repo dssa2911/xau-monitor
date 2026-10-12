@@ -15,6 +15,11 @@ Tugas:
    (support ± 0,2 ATR H1) lalu close tetap di atas support → **BUY**; kalau masuk zona resistance terdekat
    lalu close tetap di bawah resistance → **SELL**. Entry = close candle H1 itu. Candle H1 sebelumnya harus
    masih di luar zona, supaya harga yang menempel di level tidak memicu sinyal berulang.
+4. **Candle besar M5** — kapan saja: body candle M5 minimal 60 pips dan minimal 80% dari panjang candle →
+   bullish = **BUY**, bearish = **SELL**, entry = close candle itu.
+5. **EMA 20 × EMA 50 (DSSA London)** — setiap candle H1 dan H4 close: kalau EMA 20 memotong EMA 50 ke atas
+   (golden cross, momentum bullish) atau ke bawah (death cross, momentum bearish), bot mengirim sinyal plus
+   bias DSSA London saat itu (H4/H1 bullish/bearish/netral) dan arah yang boleh di sesi London.
 
 ## Setup (sekali saja)
 

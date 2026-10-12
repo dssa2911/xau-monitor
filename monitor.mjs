@@ -8,6 +8,8 @@
 //   - send a BUY/SELL retest signal when a closed H1 candle reaches the zone of the NEAREST support/resistance
 //     and closes back on the holding side of it (support -> BUY, resistance -> SELL).
 // Task 3, any time: BUY/SELL when an M5 candle closes with a body of 60+ pips that is at least 80% of the candle.
+// Task 4, DSSA London: EMA 20 crossing EMA 50 on a closed H1 or H4 candle -> cross up (bullish) / cross down (bearish),
+//   with the resulting DSSA London bias (which direction is allowed in the London session).
 // State (what was already reported) lives in state.json, kept between runs by actions/cache.
 //
 // Env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.   Local test: node monitor.mjs --dry
@@ -31,6 +33,7 @@ const MAX_LEVELS = 3;   // levels listed per side
 const ZONE_ATR = 0.2;   // retest zone = level +/- 0.2 ATR(H1)
 const BIG_BODY = 6.0;   // big M5 candle: body >= 60 pips (1 pip = 0.10)
 const BIG_RATIO = 0.8;  // ... and body >= 80% of high-low
+const EMA_FAST = 20, EMA_SLOW = 50;   // DSSA London bias EMAs
 const hhmm = (t) => new Date(t * 1000 + 8 * 3600e3).toISOString().slice(11, 16);
 const ddhh = (t) => { const s = new Date(t * 1000 + 8 * 3600e3).toISOString(); return `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}`; };
 const stamp = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 16).replace('T', ' ') + ' (UTC+8)';
@@ -40,7 +43,8 @@ const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
 state.done ??= [];     // level ids already signalled as broken
 state.retests ??= [];  // "level id@H1 time" already signalled as retest
 state.bigs ??= [];     // M5 candle times already signalled as big candles
-const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), bigs: state.bigs.slice(-300) }));
+state.crosses ??= [];  // "H1:time" / "H4:time" EMA crosses already signalled
+const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), bigs: state.bigs.slice(-300), crosses: state.crosses.slice(-300) }));
 
 async function send(text) {
   if (DRY) { console.log('[DRY]\n' + text + '\n'); return true; }
@@ -78,6 +82,12 @@ function toH4(h1) {
     else out.push({ ...b, time: s });
   }
   return out;
+}
+
+function ema(bars, n) {
+  const k = 2 / (n + 1);
+  let e = bars[0].close;
+  return bars.map(b => (e += (b.close - e) * k));
 }
 
 const sma = (bars, end) => bars.slice(end - MA_LEN + 1, end + 1).reduce((s, b) => s + b.close, 0) / MA_LEN;
@@ -200,6 +210,46 @@ for (const b of newM5) {
     `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
   if (sent) state.bigs.push(b.time);
   ok = sent && ok;
+}
+
+// ---- Task 4: EMA 20 x EMA 50 cross on closed H1 / H4 candles (DSSA London bias) ----
+// DSSA London bias: H4 bullish = EMA20 > EMA50 and close > EMA50; H1 bullish = EMA20 > EMA50 and close > EMA20
+// (bearish mirrored). Both agree -> only that direction in the London session, otherwise BUY & SELL.
+const h4Closed = h4.filter(b => b.time + 4 * 3600 <= Date.now() / 1000);
+const emaPair = (bars) => ({ f: ema(bars, EMA_FAST), s: ema(bars, EMA_SLOW) });
+const e1 = emaPair(h1), e4 = emaPair(h4Closed);
+const biasAt = (bars, e, i, h4rule) => {
+  const c = bars[i].close, f = e.f[i], s = e.s[i];
+  return f > s && c > (h4rule ? s : f) ? 1 : f < s && c < (h4rule ? s : f) ? -1 : 0;
+};
+const b4 = biasAt(h4Closed, e4, h4Closed.length - 1, true), b1 = biasAt(h1, e1, h1.length - 1, false);
+const biasName = (b) => b === 1 ? 'Bullish 🟢' : b === -1 ? 'Bearish 🔴' : 'Netral ⚪';
+const allowed = b4 === b1 && b4 !== 0 ? (b4 === 1 ? 'BUY saja' : 'SELL saja') : 'BUY & SELL';
+
+for (const tf of [{ name: 'H1', bars: h1, e: e1, sec: 3600, key: 'lastCrossH1' }, { name: 'H4', bars: h4Closed, e: e4, sec: 4 * 3600, key: 'lastCrossH4' }]) {
+  const { bars, e } = tf;
+  if (bars.length < EMA_SLOW + 2) continue;
+  // candles closed since the previous run (first run: only the last one)
+  const from = state[tf.key] ? bars.findIndex(b => b.time > state[tf.key]) : bars.length - 1;
+  if (from < 0) continue;
+  let sentAll = true;
+  for (let i = Math.max(from, 1); i < bars.length; i++) {
+    const up = e.f[i - 1] <= e.s[i - 1] && e.f[i] > e.s[i];
+    const down = e.f[i - 1] >= e.s[i - 1] && e.f[i] < e.s[i];
+    const id = `${tf.name}:${bars[i].time}`;
+    if ((!up && !down) || state.crosses.includes(id)) continue;
+    const sent = await send(`${up ? '🔼 EMA 20 CROSSING KE ATAS EMA 50' : '🔽 EMA 20 CROSSING KE BAWAH EMA 50'} · ${tf.name}\n${STRATEGY} London · ${LABEL} · ${stamp()}\n\n` +
+      `Candle ${tf.name} ${ddhh(bars[i].time)} close ${fmt(bars[i].close)}\n` +
+      `EMA 20: ${fmt(e.f[i])} · EMA 50: ${fmt(e.s[i])} (sebelumnya ${fmt(e.f[i - 1])} vs ${fmt(e.s[i - 1])})\n\n` +
+      (up ? `📈 Crossing ke ATAS (golden cross): EMA 20 yang cepat naik melewati EMA 50 yang lambat. Harga rata-rata jangka pendek sekarang di atas jangka menengah, jadi momentum ${tf.name} berubah BULLISH.`
+          : `📉 Crossing ke BAWAH (death cross): EMA 20 yang cepat turun menembus EMA 50 yang lambat. Harga rata-rata jangka pendek sekarang di bawah jangka menengah, jadi momentum ${tf.name} berubah BEARISH.`) +
+      `\n\n🎯 SINYAL ${STRATEGY}: ${up ? 'BULLISH 🟢 (utamakan BUY)' : 'BEARISH 🔴 (utamakan SELL)'}\n\n` +
+      `Bias DSSA London sekarang:\nH4: ${biasName(b4)} · H1: ${biasName(b1)}\nArah boleh di sesi London: ${allowed}\n` +
+      `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
+    if (sent) state.crosses.push(id); else sentAll = false;
+    ok = sent && ok;
+  }
+  if (sentAll) state[tf.key] = bars[bars.length - 1].time;
 }
 
 // ---- Task 1: M15 / H1 / H4 vs MA 20 ----
