@@ -1,14 +1,14 @@
-# XAU Telegram Monitor (GitHub Actions)
+# DSSA Signal — XAU/USD (GitHub Actions)
 
-Bot XAU/USD yang berjalan di server GitHub setiap 30 menit, gratis, tanpa laptop dan tanpa VPS.
+Bot XAU/USD yang berjalan di server GitHub setiap 15 menit selama market buka, gratis, tanpa laptop dan tanpa VPS.
 Data harga dari setra.id (XAU/USD), tanpa API key. Pesan dikirim ke Telegram.
 
 Dua tugas:
-1. **Setiap 30 menit selama market buka** — candle H1 dan H4 berada di atas atau di bawah MA 20.
+1. **Setiap 15 menit selama market buka** — candle H1 dan H4 berada di atas atau di bawah MA 20.
 2. **Support/resistance H1** — setiap candle H1 close, S/R dihitung ulang dari swing high/low H1 (dikirim
    kalau berubah). Sinyal **BUY** saat resistance H1 ditembus, **SELL** saat support H1 ditembus —
    hanya jika ada candle M5 yang **close** menembus level tersebut. Entry = close candle M5 itu.
-   Semua candle M5 sejak run sebelumnya ikut dicek, jadi sinyal bisa terlambat sampai ±30 menit.
+   Semua candle M5 sejak run sebelumnya ikut dicek, jadi sinyal bisa terlambat sampai ±15 menit.
 
 ## Setup (sekali saja)
 
@@ -20,14 +20,14 @@ Dua tugas:
 3. **Secrets** — *Settings → Secrets and variables → Actions → New repository secret*, buat dua:
    - `TELEGRAM_BOT_TOKEN` = token bot dari @BotFather
    - `TELEGRAM_CHAT_ID` = chat ID Telegram Anda
-4. **Tes** — tab *Actions* → *XAU Telegram Monitor* → *Run workflow*. Dalam ±1 menit laporan masuk ke Telegram.
+4. **Tes** — tab *Actions* → *DSSA Signal* → *Run workflow*. Dalam ±1 menit laporan masuk ke Telegram.
 
-Setelah itu bot jalan sendiri setiap 30 menit.
+Setelah itu bot jalan sendiri setiap 15 menit selama market buka.
 
 ## Catatan
 
 - Jadwal GitHub bisa telat beberapa menit saat server sibuk.
-- Repo private gratis 2.000 menit/bulan; bot ini memakai ±1.440 menit/bulan.
+- Repo private gratis 2.000 menit/bulan; jadwal 15 menit memakai ±2.050 menit/bulan (sedikit di atas kuota). Repo public tidak dibatasi.
 - Kalau bot berhenti mengirim, buka tab *Actions*: cek apakah workflow dinonaktifkan atau ada run yang gagal (merah).
 - Saat pasar tutup (akhir pekan), tidak ada pesan.
 - Harga setra.id bisa beda sedikit dari OANDA (TradingView) atau Exness (MT5).

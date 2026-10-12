@@ -1,4 +1,4 @@
-// XAU/USD monitor for GitHub Actions (runs every 30 minutes, no laptop needed). Data: setra.id candles.
+// DSSA strategy: XAU/USD monitor for GitHub Actions (runs every 15 minutes in market hours, no laptop needed). Data: setra.id.
 // Task 1, every run while the market is open: are the H1 and H4 candles above or below MA 20 (SMA of close)?
 // Task 2, H1 support/resistance:
 //   - after every H1 close, rebuild S/R from H1 swing highs/lows and send the list when it changed;
@@ -20,7 +20,7 @@ if (!DRY && (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID)) {
   process.exit(1);
 }
 
-const SYMBOL = 'XAU/USD', LABEL = 'XAUUSD', MA_LEN = 20, STATE = 'state.json';
+const SYMBOL = 'XAU/USD', LABEL = 'XAUUSD', STRATEGY = 'DSSA', MA_LEN = 20, STATE = 'state.json';
 const PIVOT = 3;        // swing high/low = highest/lowest of 3 candles on each side
 const MERGE_ATR = 0.3;  // levels closer than 0.3 ATR(H1) are merged into one
 const MAX_LEVELS = 3;   // levels listed per side
@@ -136,10 +136,10 @@ for (const side of ['resistance', 'support']) {
   const withTrend = buy ? s1.above && s4.above : !s1.above && !s4.above;
   const against = buy ? !s1.above && !s4.above : s1.above && s4.above;
   const others = broken.slice(0, -1).map(x => fmt(x.l.price)).join(', ');
-  const sent = await send(`${buy ? '🔺 BREAKOUT RESISTANCE' : '🔻 BREAKOUT SUPPORT'} H1 ${fmt(l.price)}\n${LABEL} · ${stamp()}\n\n` +
+  const sent = await send(`${buy ? '🔺 BREAKOUT RESISTANCE' : '🔻 BREAKOUT SUPPORT'} H1 ${fmt(l.price)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
     `✅ Konfirmasi M5: candle M5 ${hhmm(conf.time)} close ${fmt(conf.close)} ${buy ? 'di atas' : 'di bawah'} ${fmt(l.price)}.` +
     (others ? `\nIkut tertembus: ${others}.` : '') +
-    `\n\n🎯 SINYAL ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(conf.close)} (close M5 ${hhmm(conf.time)})\n` +
+    `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(conf.close)} (close M5 ${hhmm(conf.time)})\n` +
     `Tren MA20: ${withTrend ? '✅ searah H1 & H4' : against ? '⚠️ melawan H1 & H4' : '⚖️ H1/H4 campuran'}\n` +
     `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
   if (sent) broken.forEach(x => state.done.push(levelId(x.l)));
@@ -149,7 +149,7 @@ for (const side of ['resistance', 'support']) {
 // ---- Task 1: H1 / H4 vs MA 20 ----
 const h4Bar = h4[h4.length - 1];
 const both = s1.above === s4.above ? `✅ H1 & H4 searah: ${s1.above ? 'DI ATAS MA 20 (bullish)' : 'DI BAWAH MA 20 (bearish)'}` : '⚖️ H1 & H4 tidak searah';
-ok = await send(`📊 ${LABEL} · MA 20 · ${stamp()}\n\n` +
+ok = await send(`📊 ${STRATEGY} · ${LABEL} · MA 20 · ${stamp()}\n\n` +
   `H1 (candle ${hhmm(lastH1.time)} close):\n${s1.text}\n\n` +
   `H4 (candle ${hhmm(h4Bar.time)} berjalan, close ${hhmm(h4Bar.time + 4 * 3600)}):\n${s4.text}\n\n${both}`) && ok;
 
@@ -160,7 +160,7 @@ const sup = lv.support.filter(l => !state.done.includes(levelId(l)));
 const key = JSON.stringify([res.map(levelId), sup.map(levelId)]);
 if (lastH1.time !== state.lastH1 && key !== state.levelsKey) {
   const list = (arr) => arr.length ? arr.map(l => `${fmt(l.price)} (swing ${ddhh(l.time)})`).join('\n') : '- belum ada';
-  ok = await send(`📐 Support/Resistance H1 · update candle ${hhmm(lastH1.time)}\n${LABEL} · ${stamp()}\n\n` +
+  ok = await send(`📐 Support/Resistance H1 · update candle ${hhmm(lastH1.time)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
     `🔴 Resistance:\n${list([...res].reverse())}\n💰 Harga: ${fmt(lastM5.close)}\n🟢 Support:\n${list(sup)}\n\n` +
     `Sinyal dikirim hanya jika candle M5 close menembus level di atas.`) && ok;
   if (ok) state.levelsKey = key;
