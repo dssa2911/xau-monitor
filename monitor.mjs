@@ -38,6 +38,11 @@ const hhmm = (t) => new Date(t * 1000 + 8 * 3600e3).toISOString().slice(11, 16);
 const ddhh = (t) => { const s = new Date(t * 1000 + 8 * 3600e3).toISOString(); return `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}`; };
 const stamp = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 16).replace('T', ' ') + ' (UTC+8)';
 const fmt = (p) => p.toFixed(2);
+// Entry range for a signal: 1-5 pips (0.10-0.50) below the entry for BUY, above it for SELL.
+const PIP = 0.10, RANGE_MIN = 1, RANGE_MAX = 5;
+const entryRange = (buy, p) => buy
+  ? `Range BUY: ${fmt(p - RANGE_MAX * PIP)} – ${fmt(p - RANGE_MIN * PIP)} (${RANGE_MIN}-${RANGE_MAX} pips di bawah entry)`
+  : `Range SELL: ${fmt(p + RANGE_MIN * PIP)} – ${fmt(p + RANGE_MAX * PIP)} (${RANGE_MIN}-${RANGE_MAX} pips di atas entry)`;
 
 const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
 state.done ??= [];     // level ids already signalled as broken
@@ -162,7 +167,7 @@ for (const side of ['resistance', 'support']) {
   const sent = await send(`${buy ? '🔺 BREAKOUT RESISTANCE' : '🔻 BREAKOUT SUPPORT'} H1 ${fmt(l.price)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
     `✅ Konfirmasi M5: candle M5 ${hhmm(conf.time)} close ${fmt(conf.close)} ${buy ? 'di atas' : 'di bawah'} ${fmt(l.price)}.` +
     (others ? `\nIkut tertembus: ${others}.` : '') +
-    `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(conf.close)} (close M5 ${hhmm(conf.time)})\n` +
+    `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(conf.close)} (close M5 ${hhmm(conf.time)})\n${entryRange(buy, conf.close)}\n` +
     `Tren MA20: ${trendNote(buy)}\n` +
     `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
   if (sent) broken.forEach(x => state.done.push(levelId(x.l)));
@@ -187,7 +192,7 @@ if (lastH1.time !== state.lastH1 && h1.length > 1) {
       `✅ Candle H1 ${hhmm(lastH1.time)} masuk zona ${fmt(l.price - zone)}–${fmt(l.price + zone)} ` +
       `(${buy ? `low ${fmt(lastH1.low)}` : `high ${fmt(lastH1.high)}`}) lalu close ${fmt(lastH1.close)} ` +
       `${buy ? 'di atas support' : 'di bawah resistance'} (swing ${ddhh(l.time)}).` +
-      `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(lastH1.close)} (close H1 ${hhmm(lastH1.time)})\n` +
+      `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(lastH1.close)} (close H1 ${hhmm(lastH1.time)})\n${entryRange(buy, lastH1.close)}\n` +
       `Tren MA20: ${trendNote(buy)}\n` +
       `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
     if (sent) state.retests.push(id);
@@ -205,7 +210,7 @@ for (const b of newM5) {
   const sent = await send(`${buy ? '🚀 CANDLE BESAR BULLISH' : '💥 CANDLE BESAR BEARISH'} M5 ${hhmm(b.time)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
     `Body ${(body * 10).toFixed(0)} pips (${(100 * body / range).toFixed(0)}% dari candle ${(range * 10).toFixed(0)} pips)\n` +
     `Open ${fmt(b.open)} · High ${fmt(b.high)} · Low ${fmt(b.low)} · Close ${fmt(b.close)}` +
-    `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(b.close)} (close M5 ${hhmm(b.time)})\n` +
+    `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(b.close)} (close M5 ${hhmm(b.time)})\n${entryRange(buy, b.close)}\n` +
     `Tren MA20: ${trendNote(buy)}\n` +
     `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
   if (sent) state.bigs.push(b.time);
@@ -243,7 +248,7 @@ for (const tf of [{ name: 'M15', bars: m15, e: emaPair(m15), key: 'lastCrossM15'
       `EMA 20: ${fmt(e.f[i])} · EMA 50: ${fmt(e.s[i])} (sebelumnya ${fmt(e.f[i - 1])} vs ${fmt(e.s[i - 1])})\n\n` +
       (up ? `📈 Crossing ke ATAS (golden cross): EMA 20 yang cepat naik melewati EMA 50 yang lambat. Harga rata-rata jangka pendek sekarang di atas jangka menengah, jadi momentum ${tf.name} berubah BULLISH.`
           : `📉 Crossing ke BAWAH (death cross): EMA 20 yang cepat turun menembus EMA 50 yang lambat. Harga rata-rata jangka pendek sekarang di bawah jangka menengah, jadi momentum ${tf.name} berubah BEARISH.`) +
-      `\n\n🎯 SINYAL ${STRATEGY}: ${up ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(bars[i].close)} (close ${tf.name} ${hhmm(bars[i].time)})\n` +
+      `\n\n🎯 SINYAL ${STRATEGY}: ${up ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(bars[i].close)} (close ${tf.name} ${hhmm(bars[i].time)})\n${entryRange(up, bars[i].close)}\n` +
       `Tren MA20: ${trendNote(up)}\n\n` +
       `Bias DSSA London sekarang:\nH4: ${biasName(b4)} · H1: ${biasName(b1)}\nArah boleh di sesi London: ${allowed}\n` +
       `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
@@ -263,7 +268,7 @@ let lastCross = n15;
 while (lastCross > 0 && sideAt(lastCross - 1) === sideAt(lastCross)) lastCross--;
 const emaUp = sideAt(n15) > 0, freshCross = lastCross === n15;
 const emaText = `EMA 20 ${fmt(e15.f[n15])} ${emaUp ? '> ' : '< '}EMA 50 ${fmt(e15.s[n15])} → ${emaUp ? '🟢 BULLISH' : '🔴 BEARISH'}\n` +
-  (freshCross ? `🔄 BARU CROSSING ${emaUp ? 'KE ATAS' : 'KE BAWAH'} di candle ${hhmm(m15[n15].time)}\n🎯 SINYAL ${STRATEGY}: ${emaUp ? 'BUY 🟢' : 'SELL 🔴'} · Entry ${fmt(m15[n15].close)} (close M15)\nTren MA20: ${trendNote(emaUp)}`
+  (freshCross ? `🔄 BARU CROSSING ${emaUp ? 'KE ATAS' : 'KE BAWAH'} di candle ${hhmm(m15[n15].time)}\n🎯 SINYAL ${STRATEGY}: ${emaUp ? 'BUY 🟢' : 'SELL 🔴'} · Entry ${fmt(m15[n15].close)} (close M15)\n${entryRange(emaUp, m15[n15].close)}\nTren MA20: ${trendNote(emaUp)}`
     : `Cross terakhir: ${emaUp ? 'ke ATAS' : 'ke BAWAH'} di candle ${ddhh(m15[lastCross].time)} (${n15 - lastCross} candle lalu)`);
 ok = await send(`📊 ${STRATEGY} · ${LABEL} · MA 20 · ${stamp()}\n\n` +
   `M15 (candle ${hhmm(lastM15.time)} close):\n${s15.text}\n\n` +
