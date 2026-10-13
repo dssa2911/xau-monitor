@@ -243,7 +243,8 @@ for (const tf of [{ name: 'M15', bars: m15, e: emaPair(m15), key: 'lastCrossM15'
       `EMA 20: ${fmt(e.f[i])} · EMA 50: ${fmt(e.s[i])} (sebelumnya ${fmt(e.f[i - 1])} vs ${fmt(e.s[i - 1])})\n\n` +
       (up ? `📈 Crossing ke ATAS (golden cross): EMA 20 yang cepat naik melewati EMA 50 yang lambat. Harga rata-rata jangka pendek sekarang di atas jangka menengah, jadi momentum ${tf.name} berubah BULLISH.`
           : `📉 Crossing ke BAWAH (death cross): EMA 20 yang cepat turun menembus EMA 50 yang lambat. Harga rata-rata jangka pendek sekarang di bawah jangka menengah, jadi momentum ${tf.name} berubah BEARISH.`) +
-      `\n\n🎯 SINYAL ${STRATEGY}: ${up ? 'BULLISH 🟢 (utamakan BUY)' : 'BEARISH 🔴 (utamakan SELL)'}\n\n` +
+      `\n\n🎯 SINYAL ${STRATEGY}: ${up ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(bars[i].close)} (close ${tf.name} ${hhmm(bars[i].time)})\n` +
+      `Tren MA20: ${trendNote(up)}\n\n` +
       `Bias DSSA London sekarang:\nH4: ${biasName(b4)} · H1: ${biasName(b1)}\nArah boleh di sesi London: ${allowed}\n` +
       `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
     if (sent) state.crosses.push(id); else sentAll = false;
