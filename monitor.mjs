@@ -10,6 +10,9 @@
 // Task 3, any time: BUY/SELL when an M5 candle closes with a body of 60+ pips that is at least 80% of the candle.
 // Task 4, DSSA London: EMA 20 crossing EMA 50 on a closed M15 candle -> cross up (bullish) / cross down (bearish),
 //   with the resulting DSSA London bias (which direction is allowed in the London session).
+// Every BUY/SELL signal gets an entry range (1-5 pips) and a HOLD check: against the MA20 trend or the London bias,
+//   sideways or whipsawing EMAs, little room to the next S/R, price stretched from EMA 20, spike candle, quiet hours,
+//   Friday close, week open, high-impact USD news. Any hit marks the signal HOLD with the reasons.
 // State (what was already reported) lives in state.json, kept between runs by actions/cache.
 //
 // Env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.   Local test: node monitor.mjs --dry
@@ -150,6 +153,83 @@ const trendNote = (buy) => (buy ? ups === 3 : ups === 0) ? '✅ terkonfirmasi (M
 const lv = levels(h1);
 let ok = true;
 
+// DSSA London bias: H4 bullish = EMA20 > EMA50 and close > EMA50; H1 bullish = EMA20 > EMA50 and close > EMA20
+// (bearish mirrored). Both agree -> only that direction in the London session, otherwise BUY & SELL.
+const h4Closed = h4.filter(b => b.time + 4 * 3600 <= Date.now() / 1000);
+const emaPair = (bars) => ({ f: ema(bars, EMA_FAST), s: ema(bars, EMA_SLOW) });
+const e1 = emaPair(h1), e4 = emaPair(h4Closed);
+const biasAt = (bars, e, i, h4rule) => {
+  const c = bars[i].close, f = e.f[i], s = e.s[i];
+  return f > s && c > (h4rule ? s : f) ? 1 : f < s && c < (h4rule ? s : f) ? -1 : 0;
+};
+const b4 = biasAt(h4Closed, e4, h4Closed.length - 1, true), b1 = biasAt(h1, e1, h1.length - 1, false);
+const biasName = (b) => b === 1 ? 'Bullish 🟢' : b === -1 ? 'Bearish 🔴' : 'Netral ⚪';
+const allowed = b4 === b1 && b4 !== 0 ? (b4 === 1 ? 'BUY saja' : 'SELL saja') : 'BUY & SELL';
+
+// ---- HOLD advice: every BUY/SELL signal is checked for reasons not to enter yet ----
+// The signal is still sent; when a reason applies it is marked HOLD with the analysis behind it.
+const HOLD_EMA_GAP = 0.1;   // sideways: EMA 20/50 M15 closer than 0.1 ATR M15
+const HOLD_WHIPSAW = 8;     // whipsaw: 2+ EMA 20/50 M15 crosses within the last 8 M15 candles (2 hours)
+const HOLD_ROOM = 0.5;      // opposite H1 S/R closer than 0.5 ATR H1 to the entry
+const HOLD_STRETCH = 1.5;   // entry more than 1.5 ATR M15 away from EMA 20 M15
+const HOLD_SPIKE = 2;       // signal candle body above 2x ATR of its timeframe
+const HOLD_NEWS_MIN = 30;   // high-impact USD news within 30 minutes before/after
+const e15 = emaPair(m15), n15 = m15.length - 1;
+const atr15 = atrSeries(m15)[n15], atrH1 = atrSeries(h1).at(-1), atr5 = atrSeries(m5).at(-1);
+const pips = (d) => `${(Math.abs(d) * 10).toFixed(0)} pips`;
+const side15 = (i) => Math.sign(e15.f[i] - e15.s[i]);
+let recentCrosses = 0;
+for (let i = n15 - HOLD_WHIPSAW + 1; i <= n15; i++) if (i > 0 && side15(i) !== side15(i - 1)) recentCrosses++;
+// Week open = first H1 candle after a gap of more than a day.
+let weekOpen = null;
+for (let i = h1All.length - 1; i > 0; i--) if (h1All[i].time - h1All[i - 1].time > 24 * 3600) { weekOpen = { time: h1All[i].time, gap: h1All[i].open - h1All[i - 1].close }; break; }
+let news = [];
+try {
+  const r = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json', { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  const j = await r.json();
+  if (Array.isArray(j)) news = j.filter(n => n.country === 'USD' && n.impact === 'High').map(n => ({ title: n.title, time: Date.parse(n.date) / 1000 }));
+} catch (e) { console.log('news calendar unavailable:', e.message); }
+
+function holdReasons(buy, entry, candle, atrTf, tfName) {
+  const why = [], now = Date.now() / 1000, dir = buy ? 'BUY' : 'SELL';
+  if (buy ? ups === 0 : ups === 3)
+    why.push(`Melawan tren MA20: M15, H1 & H4 semua ${buy ? 'di bawah' : 'di atas'} SMA20, jadi ${dir} melawan arus utama.`);
+  if (b4 === b1 && b4 !== 0 && (b4 === 1) !== buy)
+    why.push(`Melawan bias DSSA London: H4 & H1 ${b4 === 1 ? 'bullish' : 'bearish'}, arah yang boleh hanya ${b4 === 1 ? 'BUY' : 'SELL'}.`);
+  const gap = Math.abs(e15.f[n15] - e15.s[n15]);
+  if (gap < HOLD_EMA_GAP * atr15)
+    why.push(`Market sideways: EMA 20 & EMA 50 M15 hanya berjarak ${pips(gap)} (batas ${pips(HOLD_EMA_GAP * atr15)} = ${HOLD_EMA_GAP} ATR M15), belum ada trend yang jelas.`);
+  if (recentCrosses >= 2)
+    why.push(`Whipsaw: EMA 20/50 M15 sudah crossing ${recentCrosses}× dalam ${HOLD_WHIPSAW} candle terakhir (${HOLD_WHIPSAW / 4} jam), arah sering berbalik.`);
+  const opp = (buy ? lv.resistance : lv.support).find(l => !state.done.includes(levelId(l)) && (buy ? l.price > entry : l.price < entry));
+  if (opp && Math.abs(opp.price - entry) < HOLD_ROOM * atrH1)
+    why.push(`Ruang sempit: ${buy ? 'resistance' : 'support'} H1 ${fmt(opp.price)} hanya ${pips(opp.price - entry)} ${buy ? 'di atas' : 'di bawah'} entry (batas ${pips(HOLD_ROOM * atrH1)} = ${HOLD_ROOM} ATR H1), harga bisa mental di situ.`);
+  const stretch = buy ? entry - e15.f[n15] : e15.f[n15] - entry;
+  if (stretch > HOLD_STRETCH * atr15)
+    why.push(`Harga sudah lari: entry ${pips(stretch)} ${buy ? 'di atas' : 'di bawah'} EMA 20 M15 (batas ${pips(HOLD_STRETCH * atr15)} = ${HOLD_STRETCH} ATR M15), rawan pullback ke EMA dulu.`);
+  const body = Math.abs(candle.close - candle.open);
+  if (body > HOLD_SPIKE * atrTf)
+    why.push(`Candle sinyal terlalu besar: body ${pips(body)} (batas ${pips(HOLD_SPIKE * atrTf)} = ${HOLD_SPIKE}× ATR ${tfName}), biasanya spike lalu retrace.`);
+  const wib = new Date((now + 7 * 3600) * 1000), wibH = wib.getUTCHours(), utc = new Date(now * 1000);
+  if (wibH >= 5 && wibH < 8)
+    why.push('Jam sepi: 05:00–08:00 WIB (akhir sesi New York, rollover & awal Asia), likuiditas tipis dan spread lebar.');
+  if (utc.getUTCDay() === 5 && utc.getUTCHours() >= 19)
+    why.push('Jelang close Jumat: posisi bisa terbawa gap weekend, banyak trader tutup posisi sehingga gerak harga tidak wajar.');
+  if (weekOpen && now - weekOpen.time < 3 * 3600)
+    why.push(`Awal minggu: market baru buka ${ddhh(weekOpen.time)} (gap weekend ${pips(weekOpen.gap)}), harga sering menutup gap dulu sebelum punya arah.`);
+  for (const n of news.filter(n => Math.abs(n.time - now) <= HOLD_NEWS_MIN * 60))
+    why.push(`Berita besar USD: "${n.title}" jam ${ddhh(n.time)} (dalam ±${HOLD_NEWS_MIN} menit), volatilitas & spread bisa melonjak.`);
+  return why;
+}
+
+// The 🎯 block of every signal: direction, entry, entry range, MA20 trend and the HOLD advice with its reasons.
+function signalBlock(buy, entry, src, candle, atrTf, tfName) {
+  const why = holdReasons(buy, entry, candle, atrTf, tfName), dir = buy ? 'BUY' : 'SELL';
+  return `🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}${why.length ? ' → ⏸️ HOLD' : ''}\nEntry: ${fmt(entry)} (${src})\n${entryRange(buy, entry)}\nTren MA20: ${trendNote(buy)}\n` +
+    (why.length ? `\n⏸️ SARAN: HOLD dulu, jangan entry ${dir} sekarang.\nAlasan analisa:\n${why.map(w => '• ' + w).join('\n')}\n`
+      : `✅ Cek HOLD: tidak ada alasan menunda, setup ${dir} bersih.\n`);
+}
+
 // ---- Task 2b: breakout signals, only on an M5 close beyond the level ----
 const newM5 = state.lastM5 ? m5.filter(b => b.time > state.lastM5) : m5.slice(-6);
 for (const side of ['resistance', 'support']) {
@@ -167,8 +247,7 @@ for (const side of ['resistance', 'support']) {
   const sent = await send(`${buy ? '🔺 BREAKOUT RESISTANCE' : '🔻 BREAKOUT SUPPORT'} H1 ${fmt(l.price)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
     `✅ Konfirmasi M5: candle M5 ${hhmm(conf.time)} close ${fmt(conf.close)} ${buy ? 'di atas' : 'di bawah'} ${fmt(l.price)}.` +
     (others ? `\nIkut tertembus: ${others}.` : '') +
-    `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(conf.close)} (close M5 ${hhmm(conf.time)})\n${entryRange(buy, conf.close)}\n` +
-    `Tren MA20: ${trendNote(buy)}\n` +
+    `\n\n${signalBlock(buy, conf.close, `close M5 ${hhmm(conf.time)}`, conf, atr5, 'M5')}` +
     `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
   if (sent) broken.forEach(x => state.done.push(levelId(x.l)));
   ok = sent && ok;
@@ -192,8 +271,7 @@ if (lastH1.time !== state.lastH1 && h1.length > 1) {
       `✅ Candle H1 ${hhmm(lastH1.time)} masuk zona ${fmt(l.price - zone)}–${fmt(l.price + zone)} ` +
       `(${buy ? `low ${fmt(lastH1.low)}` : `high ${fmt(lastH1.high)}`}) lalu close ${fmt(lastH1.close)} ` +
       `${buy ? 'di atas support' : 'di bawah resistance'} (swing ${ddhh(l.time)}).` +
-      `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(lastH1.close)} (close H1 ${hhmm(lastH1.time)})\n${entryRange(buy, lastH1.close)}\n` +
-      `Tren MA20: ${trendNote(buy)}\n` +
+      `\n\n${signalBlock(buy, lastH1.close, `close H1 ${hhmm(lastH1.time)}`, lastH1, atrH1, 'H1')}` +
       `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
     if (sent) state.retests.push(id);
     ok = sent && ok;
@@ -210,28 +288,14 @@ for (const b of newM5) {
   const sent = await send(`${buy ? '🚀 CANDLE BESAR BULLISH' : '💥 CANDLE BESAR BEARISH'} M5 ${hhmm(b.time)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
     `Body ${(body * 10).toFixed(0)} pips (${(100 * body / range).toFixed(0)}% dari candle ${(range * 10).toFixed(0)} pips)\n` +
     `Open ${fmt(b.open)} · High ${fmt(b.high)} · Low ${fmt(b.low)} · Close ${fmt(b.close)}` +
-    `\n\n🎯 SINYAL ${STRATEGY}: ${buy ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(b.close)} (close M5 ${hhmm(b.time)})\n${entryRange(buy, b.close)}\n` +
-    `Tren MA20: ${trendNote(buy)}\n` +
+    `\n\n${signalBlock(buy, b.close, `close M5 ${hhmm(b.time)}`, b, atr5, 'M5')}` +
     `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
   if (sent) state.bigs.push(b.time);
   ok = sent && ok;
 }
 
 // ---- Task 4: EMA 20 x EMA 50 cross on closed M15 candles (with the DSSA London H4/H1 bias) ----
-// DSSA London bias: H4 bullish = EMA20 > EMA50 and close > EMA50; H1 bullish = EMA20 > EMA50 and close > EMA20
-// (bearish mirrored). Both agree -> only that direction in the London session, otherwise BUY & SELL.
-const h4Closed = h4.filter(b => b.time + 4 * 3600 <= Date.now() / 1000);
-const emaPair = (bars) => ({ f: ema(bars, EMA_FAST), s: ema(bars, EMA_SLOW) });
-const e1 = emaPair(h1), e4 = emaPair(h4Closed);
-const biasAt = (bars, e, i, h4rule) => {
-  const c = bars[i].close, f = e.f[i], s = e.s[i];
-  return f > s && c > (h4rule ? s : f) ? 1 : f < s && c < (h4rule ? s : f) ? -1 : 0;
-};
-const b4 = biasAt(h4Closed, e4, h4Closed.length - 1, true), b1 = biasAt(h1, e1, h1.length - 1, false);
-const biasName = (b) => b === 1 ? 'Bullish 🟢' : b === -1 ? 'Bearish 🔴' : 'Netral ⚪';
-const allowed = b4 === b1 && b4 !== 0 ? (b4 === 1 ? 'BUY saja' : 'SELL saja') : 'BUY & SELL';
-
-for (const tf of [{ name: 'M15', bars: m15, e: emaPair(m15), key: 'lastCrossM15' }]) {
+for (const tf of [{ name: 'M15', bars: m15, e: e15, atr: atr15, key: 'lastCrossM15' }]) {
   const { bars, e } = tf;
   if (bars.length < EMA_SLOW + 2) continue;
   // candles closed since the previous run (first run: only the last one)
@@ -248,8 +312,7 @@ for (const tf of [{ name: 'M15', bars: m15, e: emaPair(m15), key: 'lastCrossM15'
       `EMA 20: ${fmt(e.f[i])} · EMA 50: ${fmt(e.s[i])} (sebelumnya ${fmt(e.f[i - 1])} vs ${fmt(e.s[i - 1])})\n\n` +
       (up ? `📈 Crossing ke ATAS (golden cross): EMA 20 yang cepat naik melewati EMA 50 yang lambat. Harga rata-rata jangka pendek sekarang di atas jangka menengah, jadi momentum ${tf.name} berubah BULLISH.`
           : `📉 Crossing ke BAWAH (death cross): EMA 20 yang cepat turun menembus EMA 50 yang lambat. Harga rata-rata jangka pendek sekarang di bawah jangka menengah, jadi momentum ${tf.name} berubah BEARISH.`) +
-      `\n\n🎯 SINYAL ${STRATEGY}: ${up ? 'BUY 🟢' : 'SELL 🔴'}\nEntry: ${fmt(bars[i].close)} (close ${tf.name} ${hhmm(bars[i].time)})\n${entryRange(up, bars[i].close)}\n` +
-      `Tren MA20: ${trendNote(up)}\n\n` +
+      `\n\n${signalBlock(up, bars[i].close, `close ${tf.name} ${hhmm(bars[i].time)}`, bars[i], tf.atr, tf.name)}\n` +
       `Bias DSSA London sekarang:\nH4: ${biasName(b4)} · H1: ${biasName(b1)}\nArah boleh di sesi London: ${allowed}\n` +
       `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
     if (sent) state.crosses.push(id); else sentAll = false;
@@ -262,13 +325,11 @@ for (const tf of [{ name: 'M15', bars: m15, e: emaPair(m15), key: 'lastCrossM15'
 const h4Bar = h4[h4.length - 1], lastM15 = m15[m15.length - 1];
 const both = ups === 3 || ups === 0 ? `✅ Tren terkonfirmasi: M15, H1 & H4 ${ups ? 'DI ATAS MA 20 (bullish)' : 'DI BAWAH MA 20 (bearish)'}` : '⚖️ Tren belum terkonfirmasi: M15, H1 & H4 tidak searah';
 // EMA 20 vs EMA 50 on M15: current side, the last cross, and a BUY/SELL signal when the last closed M15 candle crossed.
-const e15 = emaPair(m15), n15 = m15.length - 1;
-const sideAt = (i) => Math.sign(e15.f[i] - e15.s[i]);
 let lastCross = n15;
-while (lastCross > 0 && sideAt(lastCross - 1) === sideAt(lastCross)) lastCross--;
-const emaUp = sideAt(n15) > 0, freshCross = lastCross === n15;
+while (lastCross > 0 && side15(lastCross - 1) === side15(lastCross)) lastCross--;
+const emaUp = side15(n15) > 0, freshCross = lastCross === n15;
 const emaText = `EMA 20 ${fmt(e15.f[n15])} ${emaUp ? '> ' : '< '}EMA 50 ${fmt(e15.s[n15])} → ${emaUp ? '🟢 BULLISH' : '🔴 BEARISH'}\n` +
-  (freshCross ? `🔄 BARU CROSSING ${emaUp ? 'KE ATAS' : 'KE BAWAH'} di candle ${hhmm(m15[n15].time)}\n🎯 SINYAL ${STRATEGY}: ${emaUp ? 'BUY 🟢' : 'SELL 🔴'} · Entry ${fmt(m15[n15].close)} (close M15)\n${entryRange(emaUp, m15[n15].close)}\nTren MA20: ${trendNote(emaUp)}`
+  (freshCross ? `🔄 BARU CROSSING ${emaUp ? 'KE ATAS' : 'KE BAWAH'} di candle ${hhmm(m15[n15].time)}\n${signalBlock(emaUp, m15[n15].close, `close M15 ${hhmm(m15[n15].time)}`, m15[n15], atr15, 'M15')}`
     : `Cross terakhir: ${emaUp ? 'ke ATAS' : 'ke BAWAH'} di candle ${ddhh(m15[lastCross].time)} (${n15 - lastCross} candle lalu)`);
 ok = await send(`📊 ${STRATEGY} · ${LABEL} · MA 20 · ${stamp()}\n\n` +
   `M15 (candle ${hhmm(lastM15.time)} close):\n${s15.text}\n\n` +
