@@ -255,10 +255,20 @@ for (const tf of [{ name: 'M15', bars: m15, e: emaPair(m15), key: 'lastCrossM15'
 // ---- Task 1: M15 / H1 / H4 vs MA 20 ----
 const h4Bar = h4[h4.length - 1], lastM15 = m15[m15.length - 1];
 const both = ups === 3 || ups === 0 ? `✅ Tren terkonfirmasi: M15, H1 & H4 ${ups ? 'DI ATAS MA 20 (bullish)' : 'DI BAWAH MA 20 (bearish)'}` : '⚖️ Tren belum terkonfirmasi: M15, H1 & H4 tidak searah';
+// EMA 20 vs EMA 50 on M15: current side, the last cross, and a BUY/SELL signal when the last closed M15 candle crossed.
+const e15 = emaPair(m15), n15 = m15.length - 1;
+const sideAt = (i) => Math.sign(e15.f[i] - e15.s[i]);
+let lastCross = n15;
+while (lastCross > 0 && sideAt(lastCross - 1) === sideAt(lastCross)) lastCross--;
+const emaUp = sideAt(n15) > 0, freshCross = lastCross === n15;
+const emaText = `EMA 20 ${fmt(e15.f[n15])} ${emaUp ? '> ' : '< '}EMA 50 ${fmt(e15.s[n15])} → ${emaUp ? '🟢 BULLISH' : '🔴 BEARISH'}\n` +
+  (freshCross ? `🔄 BARU CROSSING ${emaUp ? 'KE ATAS' : 'KE BAWAH'} di candle ${hhmm(m15[n15].time)}\n🎯 SINYAL ${STRATEGY}: ${emaUp ? 'BUY 🟢' : 'SELL 🔴'} · Entry ${fmt(m15[n15].close)} (close M15)\nTren MA20: ${trendNote(emaUp)}`
+    : `Cross terakhir: ${emaUp ? 'ke ATAS' : 'ke BAWAH'} di candle ${ddhh(m15[lastCross].time)} (${n15 - lastCross} candle lalu)`);
 ok = await send(`📊 ${STRATEGY} · ${LABEL} · MA 20 · ${stamp()}\n\n` +
   `M15 (candle ${hhmm(lastM15.time)} close):\n${s15.text}\n\n` +
   `H1 (candle ${hhmm(lastH1.time)} close):\n${s1.text}\n\n` +
-  `H4 (candle ${hhmm(h4Bar.time)} berjalan, close ${hhmm(h4Bar.time + 4 * 3600)}):\n${s4.text}\n\n${both}`) && ok;
+  `H4 (candle ${hhmm(h4Bar.time)} berjalan, close ${hhmm(h4Bar.time + 4 * 3600)}):\n${s4.text}\n\n${both}\n\n` +
+  `📈 EMA 20 × EMA 50 · M15 (candle ${hhmm(lastM15.time)} close):\n${emaText}`) && ok;
 
 // ---- Task 2a: S/R list after a new H1 close, only when it changed ----
 // Levels already broken on M5 are left out until the H1 close drops them for good.
