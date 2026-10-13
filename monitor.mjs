@@ -9,7 +9,7 @@
 //     and closes back on the holding side of it (support -> BUY, resistance -> SELL).
 // Task 3, any time: BUY/SELL when an M5 candle closes with a body of 60+ pips that is at least 80% of the candle.
 // Task 4: EMA 20 crossing EMA 50 on a closed M5 candle -> short BUY/SELL message (cross up = BUY, down = SELL).
-// Task 5, "Sentuh EMA 20 M5": a closed M5 candle touches/crosses EMA 20 after 3+ candles away -> bullish BUY, bearish SELL.
+// Task 5, "Sentuh EMA 20 M5": a closed M5 candle touches/crosses EMA 20 (every touch, no filter) -> bullish BUY, bearish SELL.
 // Every BUY/SELL signal gets an entry range (1-5 pips) and a HOLD check: against the MA20 trend,
 //   sideways or whipsawing EMAs, little room to the next S/R, price stretched from EMA 20, quiet hours,
 //   Friday close, week open, high-impact USD news. Any hit marks the signal HOLD with the reasons.
@@ -313,17 +313,15 @@ if (m5.length > EMA_SLOW + 2) {
 }
 
 // ---- Task 5: "Sentuh EMA 20 M5" - a closed M5 candle touches or crosses EMA 20 ----
-// Bullish candle -> BUY, bearish candle -> SELL, entry at its close. Only the first touch after at least
-// TOUCH_AWAY candles that stayed clear of EMA 20, otherwise ranging price would touch it every few candles.
-const TOUCH_AWAY = 3;
-if (m5.length > EMA_SLOW + TOUCH_AWAY) {
+// Bullish candle -> BUY, bearish candle -> SELL, entry at its close. Every touching candle is sent (no filter,
+// as the user asked), so a ranging market gives many signals.
+if (m5.length > EMA_SLOW) {
   const ef = c5.e.f, touches = (i) => m5[i].low <= ef[i] && m5[i].high >= ef[i];
   const from = state.lastTouchM5 ? m5.findIndex(b => b.time > state.lastTouchM5) : m5.length - 1;
   let sentAll = true;
-  for (let i = Math.max(from, TOUCH_AWAY); from >= 0 && i < m5.length; i++) {
+  for (let i = Math.max(from, 0); from >= 0 && i < m5.length; i++) {
     const b = m5[i], id = `T5:${b.time}`;
     if (!touches(i) || b.close === b.open || state.touches.includes(id)) continue;
-    if ([...Array(TOUCH_AWAY).keys()].some(k => touches(i - 1 - k))) continue;
     const buy = b.close > b.open;
     const through = (b.open - ef[i]) * (b.close - ef[i]) < 0;   // open and close on opposite sides of EMA 20
     const sent = await send(`📍 Sentuh EMA 20 M5\n` + simpleSignal(buy, b,
