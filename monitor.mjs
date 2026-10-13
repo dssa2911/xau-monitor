@@ -9,6 +9,7 @@
 //     and closes back on the holding side of it (support -> BUY, resistance -> SELL).
 // Task 3, any time: BUY/SELL when an M5 candle closes with a body of 60+ pips that is at least 80% of the candle.
 // Task 4: EMA 20 crossing EMA 50 on a closed M5 candle -> short BUY/SELL message (cross up = BUY, down = SELL).
+// Task 5, "Sentuh EMA 20 M5": a closed M5 candle touches/crosses EMA 20 after 3+ candles away -> bullish BUY, bearish SELL.
 // Every BUY/SELL signal gets an entry range (1-5 pips) and a HOLD check: against the MA20 trend,
 //   sideways or whipsawing EMAs, little room to the next S/R, price stretched from EMA 20, quiet hours,
 //   Friday close, week open, high-impact USD news. Any hit marks the signal HOLD with the reasons.
@@ -50,8 +51,9 @@ const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
 state.done ??= [];     // level ids already signalled as broken
 state.retests ??= [];  // "level id@H1 time" already signalled as retest
 state.bigs ??= [];     // M5 candle times already signalled as big candles
-state.crosses ??= [];  // "M15:time" EMA crosses already signalled
-const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), bigs: state.bigs.slice(-300), crosses: state.crosses.slice(-300) }));
+state.crosses ??= [];  // "M5:time" EMA crosses already signalled
+state.touches ??= [];  // "T5:time" M5 candles already signalled as touching EMA 20
+const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), bigs: state.bigs.slice(-300), crosses: state.crosses.slice(-300), touches: state.touches.slice(-300) }));
 
 async function send(text) {
   if (DRY) { console.log('[DRY]\n' + text + '\n'); return true; }
@@ -285,11 +287,11 @@ for (const b of newM5) {
 
 // ---- Task 4: EMA 20 x EMA 50 cross on closed M5 candles, as short as possible ----
 // Cross up -> BUY, cross down -> SELL, entry at the M5 close, with the 1-5 pip range and the HOLD check in a few words.
-const simpleSignal = (buy, b) => {
+const simpleSignal = (buy, b, what = `EMA 20 cross ${buy ? 'ke atas' : 'ke bawah'} EMA 50`) => {
   const why = holdReasons(buy, b.close, c5).map(w => w.short);
   const lo = buy ? b.close - RANGE_MAX * PIP : b.close + RANGE_MIN * PIP, hi = buy ? b.close - RANGE_MIN * PIP : b.close + RANGE_MAX * PIP;
   return `${buy ? '🟢 BUY' : '🔴 SELL'} ${LABEL} · M5 ${hhmm(b.time)}\n` +
-    `EMA 20 cross ${buy ? 'ke atas' : 'ke bawah'} EMA 50\n` +
+    `${what}\n` +
     `Entry ${fmt(b.close)} · Range ${fmt(lo)}–${fmt(hi)}\n` +
     (why.length ? `⏸️ HOLD: ${why.join(', ')}` : '✅ Boleh entry') + `\n${STRATEGY}`;
 };
@@ -308,6 +310,28 @@ if (m5.length > EMA_SLOW + 2) {
     ok = sent && ok;
   }
   if (sentAll) state.lastCrossM5 = m5[m5.length - 1].time;
+}
+
+// ---- Task 5: "Sentuh EMA 20 M5" - a closed M5 candle touches or crosses EMA 20 ----
+// Bullish candle -> BUY, bearish candle -> SELL, entry at its close. Only the first touch after at least
+// TOUCH_AWAY candles that stayed clear of EMA 20, otherwise ranging price would touch it every few candles.
+const TOUCH_AWAY = 3;
+if (m5.length > EMA_SLOW + TOUCH_AWAY) {
+  const ef = c5.e.f, touches = (i) => m5[i].low <= ef[i] && m5[i].high >= ef[i];
+  const from = state.lastTouchM5 ? m5.findIndex(b => b.time > state.lastTouchM5) : m5.length - 1;
+  let sentAll = true;
+  for (let i = Math.max(from, TOUCH_AWAY); from >= 0 && i < m5.length; i++) {
+    const b = m5[i], id = `T5:${b.time}`;
+    if (!touches(i) || b.close === b.open || state.touches.includes(id)) continue;
+    if ([...Array(TOUCH_AWAY).keys()].some(k => touches(i - 1 - k))) continue;
+    const buy = b.close > b.open;
+    const through = (b.open - ef[i]) * (b.close - ef[i]) < 0;   // open and close on opposite sides of EMA 20
+    const sent = await send(`📍 Sentuh EMA 20 M5\n` + simpleSignal(buy, b,
+      `Candle ${buy ? 'naik' : 'turun'} ${through ? 'menembus' : 'menyentuh'} EMA 20 (${fmt(ef[i])})`));
+    if (sent) state.touches.push(id); else sentAll = false;
+    ok = sent && ok;
+  }
+  if (sentAll) state.lastTouchM5 = m5[m5.length - 1].time;
 }
 
 // ---- Task 1: M15 / H1 / H4 vs MA 20 ----
