@@ -12,11 +12,22 @@ concurrency:
   group: dssa-signal
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: write              # keep-alive step below
+
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # GitHub turns scheduled workflows off after 60 days without repo activity; re-enabling every run keeps it on.
+      - name: Keep schedule alive
+        continue-on-error: true
+        run: >
+          curl -s -o /dev/null -w "keep-alive %{http_code}\n" -X PUT
+          -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json"
+          "https://api.github.com/repos/${{ github.repository }}/actions/workflows/xau-monitor.yml/enable"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
