@@ -7,8 +7,7 @@
 //     (all M5 candles closed since the previous run are checked);
 //   - send a BUY/SELL retest signal when a closed H1 candle reaches the zone of the NEAREST support/resistance
 //     and closes back on the holding side of it (support -> BUY, resistance -> SELL).
-// Task 4: EMA 20 crossing EMA 50 on a closed M5 candle -> short BUY/SELL message (cross up = BUY, down = SELL).
-// Task 5, "Tembus EMA 20 M5": a closed M5 candle crosses EMA 20 in the direction of the last EMA 20/50 cross -> BUY/SELL.
+// Task 4, "Tembus EMA 20 M5": EMA 20 x EMA 50 cross on a closed M5 candle, only after an M5 candle broke EMA 20 the same way (last 12 candles).
 // Every BUY/SELL signal gets an entry range (1-5 pips) and a HOLD check: against the MA20 trend,
 //   sideways or whipsawing EMAs, little room to the next S/R, price stretched from EMA 20, quiet hours,
 //   Friday close, week open, high-impact USD news. Any hit marks the signal HOLD with the reasons.
@@ -48,8 +47,7 @@ const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
 state.done ??= [];     // level ids already signalled as broken
 state.retests ??= [];  // "level id@H1 time" already signalled as retest
 state.crosses ??= [];  // "M5:time" EMA crosses already signalled
-state.touches ??= [];  // "T5:time" M5 candles already signalled as touching EMA 20
-const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), crosses: state.crosses.slice(-300), touches: state.touches.slice(-300) }));
+const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), crosses: state.crosses.slice(-300) }));
 
 // The TradingView alert ("DSSA Signal Telegram", signals within seconds of the close) sends the same messages
 // until TV_ALERT_UNTIL (its expiry, ISO time). Until then this bot stays quiet so nothing arrives twice,
@@ -278,9 +276,11 @@ if (lastH1.time !== state.lastH1 && h1.length > 1) {
   }
 }
 
-// ---- Task 4: EMA 20 x EMA 50 cross on closed M5 candles, as short as possible ----
-// Cross up -> BUY, cross down -> SELL, entry at the M5 close, with the 1-5 pip range and the HOLD check in a few words.
-const simpleSignal = (buy, b, what = `EMA 20 cross ${buy ? 'ke atas' : 'ke bawah'} EMA 50`) => {
+// ---- Task 4: "Tembus EMA 20 M5" - EMA 20 x EMA 50 cross on a closed M5 candle, sent only if an M5 candle body
+// already crossed EMA 20 the same way (open below / close above for BUY) within the last TEMBUS_BACK candles.
+// Cross up -> BUY, cross down -> SELL, entry at the close of the cross candle, with the 1-5 pip range and HOLD check.
+const TEMBUS_BACK = 12;   // 1 hour of M5 candles
+const simpleSignal = (buy, b, what) => {
   const why = holdReasons(buy, b.close, c5).map(w => w.short);
   const lo = buy ? b.close - RANGE_MAX * PIP : b.close + RANGE_MIN * PIP, hi = buy ? b.close - RANGE_MIN * PIP : b.close + RANGE_MAX * PIP;
   return `${buy ? '🟢 BUY' : '🔴 SELL'} ${LABEL} · M5 ${hhmm(b.time)}\n` +
@@ -289,41 +289,25 @@ const simpleSignal = (buy, b, what = `EMA 20 cross ${buy ? 'ke atas' : 'ke bawah
     (why.length ? `⏸️ HOLD: ${why.join(', ')}` : '✅ Boleh entry') + `\n${STRATEGY}`;
 };
 if (m5.length > EMA_SLOW + 2) {
-  const { e } = c5;
+  const { f: ef, s: es } = c5.e;
   // M5 candles closed since the previous run (first run: only the last one)
   const from = state.lastCrossM5 ? m5.findIndex(b => b.time > state.lastCrossM5) : m5.length - 1;
   let sentAll = true;
   for (let i = Math.max(from, 1); from >= 0 && i < m5.length; i++) {
-    const up = e.f[i - 1] <= e.s[i - 1] && e.f[i] > e.s[i];
-    const down = e.f[i - 1] >= e.s[i - 1] && e.f[i] < e.s[i];
+    const up = ef[i - 1] <= es[i - 1] && ef[i] > es[i];
+    const down = ef[i - 1] >= es[i - 1] && ef[i] < es[i];
     const id = `M5:${m5[i].time}`;
     if ((!up && !down) || state.crosses.includes(id)) continue;
-    const sent = await send(simpleSignal(up, m5[i]));
+    let k = -1;   // most recent candle (within TEMBUS_BACK) whose body broke EMA 20 in the cross direction
+    for (let j = i; j > i - TEMBUS_BACK && j >= 0; j--)
+      if (up ? m5[j].open < ef[j] && m5[j].close > ef[j] : m5[j].open > ef[j] && m5[j].close < ef[j]) { k = j; break; }
+    if (k < 0) continue;
+    const sent = await send(`📍 Tembus EMA 20 M5\n` + simpleSignal(up, m5[i],
+      `Candle ${hhmm(m5[k].time)} ${up ? 'naik' : 'turun'} menembus EMA 20 (${fmt(ef[k])})${i > k ? `, ${i - k} candle lalu` : ''}\nKonfirmasi: EMA 20 cross ${up ? 'ke atas' : 'ke bawah'} EMA 50`));
     if (sent) state.crosses.push(id); else sentAll = false;
     ok = sent && ok;
   }
   if (sentAll) state.lastCrossM5 = m5[m5.length - 1].time;
-}
-
-// ---- Task 5: "Tembus EMA 20 M5" - a closed M5 candle crosses EMA 20, confirmed by the EMA 20/50 cross ----
-// Open and close on opposite sides of EMA 20, and EMA 20 on the same side of EMA 50 as the candle direction
-// (the last EMA 20/50 cross went that way) -> BUY / SELL in the cross direction, entry at its close.
-if (m5.length > EMA_SLOW) {
-  const { f: ef, s: es } = c5.e;
-  const from = state.lastTouchM5 ? m5.findIndex(b => b.time > state.lastTouchM5) : m5.length - 1;
-  let sentAll = true;
-  for (let i = Math.max(from, 0); from >= 0 && i < m5.length; i++) {
-    const b = m5[i], id = `T5:${b.time}`, buy = b.close > b.open;
-    const through = (b.open - ef[i]) * (b.close - ef[i]) < 0;
-    if (!through || (buy ? ef[i] <= es[i] : ef[i] >= es[i]) || state.touches.includes(id)) continue;
-    let k = i;   // candle of the last EMA 20/50 cross
-    while (k > 0 && c5.side(k - 1) === c5.side(i)) k--;
-    const sent = await send(`📍 Tembus EMA 20 M5\n` + simpleSignal(buy, b,
-      `Candle ${buy ? 'naik' : 'turun'} menembus EMA 20 (${fmt(ef[i])})\nKonfirmasi: EMA 20 cross ${buy ? 'ke atas' : 'ke bawah'} EMA 50 (${i - k} candle lalu)`));
-    if (sent) state.touches.push(id); else sentAll = false;
-    ok = sent && ok;
-  }
-  if (sentAll) state.lastTouchM5 = m5[m5.length - 1].time;
 }
 
 // ---- Task 1: M15 / H1 / H4 vs MA 20 ----
