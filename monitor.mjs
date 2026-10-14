@@ -55,7 +55,14 @@ state.crosses ??= [];  // "M5:time" EMA crosses already signalled
 state.touches ??= [];  // "T5:time" M5 candles already signalled as touching EMA 20
 const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), bigs: state.bigs.slice(-300), crosses: state.crosses.slice(-300), touches: state.touches.slice(-300) }));
 
-async function send(text) {
+// The TradingView alert ("DSSA Signal Telegram", signals within seconds of the close) sends the same messages
+// until TV_ALERT_UNTIL (its expiry, ISO time). Until then this bot stays quiet so nothing arrives twice,
+// and it takes over again by itself once the alert has expired.
+const TV_UNTIL = Date.parse(clean(process.env.TV_ALERT_UNTIL)) || 0;
+const MUTED = Date.now() < TV_UNTIL;
+
+async function send(text, always = false) {
+  if (MUTED && !always) { console.log('muted (TradingView alert active):', text.split('\n')[0]); return true; }
   if (DRY) { console.log('[DRY]\n' + text + '\n'); return true; }
   const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -370,6 +377,14 @@ if (lastH1.time !== state.lastH1 && key !== state.levelsKey) {
     `🔴 Resistance:\n${list([...res].reverse())}\n💰 Harga: ${fmt(lastM5.close)}\n🟢 Support:\n${list(sup)}\n\n` +
     `Sinyal breakout: candle M5 close menembus level. Sinyal retest: candle H1 masuk zona S/R terdekat lalu close bertahan.`) && ok;
   if (ok) state.levelsKey = key;
+}
+
+// Reminder once a day during the last 3 days before the TradingView alert expires.
+const day = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+if (MUTED && TV_UNTIL - Date.now() < 3 * 86400e3 && state.tvReminder !== day) {
+  const sent = await send(`⏰ Alert TradingView "DSSA Signal Telegram" habis ${new Date(TV_UNTIL + 8 * 3600e3).toISOString().slice(0, 16).replace('T', ' ')} (UTC+8).\n` +
+    `Perpanjang/buat ulang alert-nya. Setelah habis, bot GitHub otomatis mengirim sinyal lagi (lebih lambat, ±6 detik setelah close).`, true);
+  if (sent) state.tvReminder = day;
 }
 
 // Only advance when everything went out, so a failed send is retried on the next run.

@@ -59,6 +59,8 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Expiry of the TradingView alert that sends the same signals faster. Empty = this bot sends.
+          TV_ALERT_UNTIL: ''
       - name: Save state
         if: always() && hashFiles('state.json') != ''
         uses: actions/cache/save@v4
