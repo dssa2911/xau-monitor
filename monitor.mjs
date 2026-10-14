@@ -7,7 +7,6 @@
 //     (all M5 candles closed since the previous run are checked);
 //   - send a BUY/SELL retest signal when a closed H1 candle reaches the zone of the NEAREST support/resistance
 //     and closes back on the holding side of it (support -> BUY, resistance -> SELL).
-// Task 3, any time: BUY/SELL when an M5 candle closes with a body of 60+ pips that is at least 80% of the candle.
 // Task 4: EMA 20 crossing EMA 50 on a closed M5 candle -> short BUY/SELL message (cross up = BUY, down = SELL).
 // Task 5, "Sentuh EMA 20 M5": a closed M5 candle touches/crosses EMA 20 (every touch, no filter) -> bullish BUY, bearish SELL.
 // Every BUY/SELL signal gets an entry range (1-5 pips) and a HOLD check: against the MA20 trend,
@@ -34,8 +33,6 @@ const PIVOT = 3;        // swing high/low = highest/lowest of 3 candles on each 
 const MERGE_ATR = 0.3;  // levels closer than 0.3 ATR(H1) are merged into one
 const MAX_LEVELS = 3;   // levels listed per side
 const ZONE_ATR = 0.2;   // retest zone = level +/- 0.2 ATR(H1)
-const BIG_BODY = 6.0;   // big M5 candle: body >= 60 pips (1 pip = 0.10)
-const BIG_RATIO = 0.8;  // ... and body >= 80% of high-low
 const EMA_FAST = 20, EMA_SLOW = 50;   // M5 EMA cross
 const hhmm = (t) => new Date(t * 1000 + 8 * 3600e3).toISOString().slice(11, 16);
 const ddhh = (t) => { const s = new Date(t * 1000 + 8 * 3600e3).toISOString(); return `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}`; };
@@ -50,10 +47,9 @@ const entryRange = (buy, p) => buy
 const state = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
 state.done ??= [];     // level ids already signalled as broken
 state.retests ??= [];  // "level id@H1 time" already signalled as retest
-state.bigs ??= [];     // M5 candle times already signalled as big candles
 state.crosses ??= [];  // "M5:time" EMA crosses already signalled
 state.touches ??= [];  // "T5:time" M5 candles already signalled as touching EMA 20
-const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), bigs: state.bigs.slice(-300), crosses: state.crosses.slice(-300), touches: state.touches.slice(-300) }));
+const save = () => writeFileSync(STATE, JSON.stringify({ ...state, done: state.done.slice(-300), retests: state.retests.slice(-300), crosses: state.crosses.slice(-300), touches: state.touches.slice(-300) }));
 
 // The TradingView alert ("DSSA Signal Telegram", signals within seconds of the close) sends the same messages
 // until TV_ALERT_UNTIL (its expiry, ISO time). Until then this bot stays quiet so nothing arrives twice,
@@ -280,22 +276,6 @@ if (lastH1.time !== state.lastH1 && h1.length > 1) {
     if (sent) state.retests.push(id);
     ok = sent && ok;
   }
-}
-
-// ---- Task 3: big M5 candle, any time of day ----
-// Body (|close - open|) of at least 60 pips ($6.00) and at least 80% of the candle's high-low range.
-// Bullish candle -> BUY, bearish candle -> SELL, entry at its close.
-for (const b of newM5) {
-  const body = Math.abs(b.close - b.open), range = b.high - b.low;
-  if (body < BIG_BODY || body < BIG_RATIO * range || state.bigs.includes(b.time)) continue;
-  const buy = b.close > b.open;
-  const sent = await send(`${buy ? '🚀 CANDLE BESAR BULLISH' : '💥 CANDLE BESAR BEARISH'} M5 ${hhmm(b.time)}\n${STRATEGY} · ${LABEL} · ${stamp()}\n\n` +
-    `Body ${(body * 10).toFixed(0)} pips (${(100 * body / range).toFixed(0)}% dari candle ${(range * 10).toFixed(0)} pips)\n` +
-    `Open ${fmt(b.open)} · High ${fmt(b.high)} · Low ${fmt(b.low)} · Close ${fmt(b.close)}` +
-    `\n\n${signalBlock(buy, b.close, `close M5 ${hhmm(b.time)}`)}` +
-    `Harga sekarang: ${fmt(lastM5.close)}\n\nBukan saran investasi.`);
-  if (sent) state.bigs.push(b.time);
-  ok = sent && ok;
 }
 
 // ---- Task 4: EMA 20 x EMA 50 cross on closed M5 candles, as short as possible ----
