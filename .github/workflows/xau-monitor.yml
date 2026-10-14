@@ -45,6 +45,9 @@ jobs:
         run: |
           end=$(( $(date +%s) + 340 * 60 )); fails=0
           while :; do
+            # Pick up commits pushed while this run is alive, so a removed signal or the mute applies from the next candle.
+            git pull -q --ff-only || echo "git pull failed, keeping current code"
+            TV_ALERT_UNTIL=$(sed -n "s/^ *TV_ALERT_UNTIL: '\([^']*\)'.*/\1/p" .github/workflows/xau-monitor.yml); export TV_ALERT_UNTIL
             for try in $(seq 1 10); do
               out=$(node monitor.mjs 2>&1) || fails=$((fails + 1))
               echo "$out"
@@ -60,6 +63,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           # Expiry of the TradingView alert that sends the same signals faster. Empty = this bot sends.
+          # The loop re-reads this line from the file every candle.
           TV_ALERT_UNTIL: '2026-12-13T02:51:44Z'   # alert 5841478272
       - name: Save state
         if: always() && hashFiles('state.json') != ''
