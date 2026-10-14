@@ -341,11 +341,17 @@ while (lastCross > 0 && c5.side(lastCross - 1) === c5.side(lastCross)) lastCross
 const emaUp = c5.side(c5.n) > 0;
 const emaText = `EMA 20 ${fmt(c5.e.f[c5.n])} ${emaUp ? '> ' : '< '}EMA 50 ${fmt(c5.e.s[c5.n])} → ${emaUp ? '🟢 BULLISH' : '🔴 BEARISH'}\n` +
   `Cross terakhir: ${emaUp ? 'ke ATAS' : 'ke BAWAH'} di candle ${ddhh(m5[lastCross].time)} (${c5.n - lastCross} candle lalu)`;
-ok = await send(`📊 ${STRATEGY} · ${LABEL} · MA 20 · ${stamp()}\n\n` +
-  `M15 (candle ${hhmm(lastM15.time)} close):\n${s15.text}\n\n` +
-  `H1 (candle ${hhmm(lastH1.time)} close):\n${s1.text}\n\n` +
-  `H4 (candle ${hhmm(h4Bar.time)} berjalan, close ${hhmm(h4Bar.time + 4 * 3600)}):\n${s4.text}\n\n${both}\n\n` +
-  `📈 EMA 20 × EMA 50 · M5 (candle ${hhmm(lastM5.time)} close):\n${emaText}`) && ok;
+// The workflow checks every M5 close; the MA 20 status report still goes out once per 30-minute slot.
+const slot = Math.floor(Date.now() / 1800e3);
+if (slot !== state.lastReport) {
+  const sent = await send(`📊 ${STRATEGY} · ${LABEL} · MA 20 · ${stamp()}\n\n` +
+    `M15 (candle ${hhmm(lastM15.time)} close):\n${s15.text}\n\n` +
+    `H1 (candle ${hhmm(lastH1.time)} close):\n${s1.text}\n\n` +
+    `H4 (candle ${hhmm(h4Bar.time)} berjalan, close ${hhmm(h4Bar.time + 4 * 3600)}):\n${s4.text}\n\n${both}\n\n` +
+    `📈 EMA 20 × EMA 50 · M5 (candle ${hhmm(lastM5.time)} close):\n${emaText}`);
+  if (sent) state.lastReport = slot;
+  ok = sent && ok;
+}
 
 // ---- Task 2a: S/R list after a new H1 close, only when it changed ----
 // Levels already broken on M5 are left out until the H1 close drops them for good.
