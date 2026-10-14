@@ -38,14 +38,20 @@ jobs:
           path: state.json
           key: xau-state-${{ github.run_id }}
           restore-keys: xau-state-
-      # GitHub starts scheduled runs 10-30 min late, so one run stays up ~5h40m and checks
-      # 30 s after every M5 close. The next scheduled run waits (concurrency) and takes over.
+      # GitHub starts scheduled runs 10-30 min late, so one run stays up ~5h40m. From 3 s after
+      # every M5 close it retries every 3 s until setra shows the new candle (~2-3 s), so signals
+      # land seconds after the close. The next scheduled run waits (concurrency) and takes over.
       - name: Run monitor
         run: |
           end=$(( $(date +%s) + 340 * 60 )); fails=0
           while :; do
-            node monitor.mjs || fails=$((fails + 1))
-            next=$(( ($(date +%s) / 300 + 1) * 300 + 30 ))
+            for try in $(seq 1 10); do
+              out=$(node monitor.mjs 2>&1) || fails=$((fails + 1))
+              echo "$out"
+              echo "$out" | grep -q 'no new candle' || break
+              sleep 3
+            done
+            next=$(( ($(date +%s) / 300 + 1) * 300 + 3 ))
             [ "$next" -ge "$end" ] && break
             sleep $(( next - $(date +%s) ))
           done

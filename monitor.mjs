@@ -76,8 +76,14 @@ async function series(tf, seconds, closed = true) {
   const j = await r.json();
   if (!j.ok || !Array.isArray(j.data)) throw new Error(`setra ${tf}: ${j.error || r.status}`);
   const bars = j.data.map(v => ({ time: v.t / 1000, open: v.o, high: v.h, low: v.l, close: v.c })).sort((x, y) => x.time - y.time);
+  return closed ? closedOnly(bars, seconds) : bars;
+}
+
+// The bot polls right after each close: a candle only counts as closed once setra shows the next one
+// (its last ticks are in), or 15 s after its close time when no next candle comes (quiet market).
+function closedOnly(bars, seconds) {
   const now = Date.now() / 1000;
-  return closed ? bars.filter(x => x.time + seconds <= now) : bars;
+  return bars.filter((x, i) => x.time + seconds <= now && (i < bars.length - 1 || now - x.time - seconds > 15));
 }
 
 // H4 built from H1 like OANDA on TradingView: H4 opens at 17/21/01/05/09/13 New York time.
@@ -135,7 +141,7 @@ const levelId = (l) => `${l.type}:${l.time}`;
 
 // ---- data ----
 const h1All = await series('1h', 3600, false);
-const h1 = h1All.filter(b => b.time + 3600 <= Date.now() / 1000);
+const h1 = closedOnly(h1All, 3600);
 const h4 = toH4(h1All);   // keeps the forming H4 candle
 const m5 = await series('5m', 300);
 const m15 = await series('15m', 900);
